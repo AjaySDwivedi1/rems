@@ -53,9 +53,17 @@
   [handler]
   (let [csrf-handler (wrap-anti-forgery handler {:error-handler csrf-error-handler})]
     (fn [request]
-      (if (:uses-valid-api-key? request)
-        (handler request)
-        (csrf-handler request)))))
+      (cond (:uses-valid-api-key? request)
+            (handler request) ; API request
+
+            (and (auth/get-api-key request)
+                 (not (get-in request [:headers "x-rems-user-id"])))
+            (throw-unauthorized) ; invalid API request missing user
+
+            (get-in request [:headers "x-rems-user-id"])
+            (throw-forbidden) ; any other request with API user should be forbidden
+
+            :else (csrf-handler request))))) ; SPA request
 
 (defn- wrap-user
   "Binds context/*user* to the buddy identity."
@@ -137,15 +145,13 @@
       ;; ensure the cookie is set for future requests
       (assoc-some-in (handler request) [:cookies "rems-user-preferred-language"] (some-> context/*lang* name)))))
 
-(defn on-unauthorized-error [request]
-  (error-page
-   {:status 401
-    :title (str "Access to " (:uri request) " is not authorized")}))
+(defn on-unauthorized-error [e request]
+  (-> (ring.util.http-response/unauthorized "unauthorized")
+      (ring.util.response/content-type "text/plain")))
 
-(defn on-forbidden-error [request]
-  (error-page
-   {:status 403
-    :title (str "Access to " (:uri request) " is forbidden")}))
+(defn on-forbidden-error [e request]
+  (-> (ring.util.http-response/forbidden (or (.getMessage e) "forbidden"))
+      (ring.util.response/content-type "text/plain")))
 
 (defn wrap-unauthorized-and-forbidden
   "Handles unauthorized exceptions by showing an error page."
@@ -154,9 +160,9 @@
     (try
       (handler req)
       (catch UnauthorizedException e
-        (on-unauthorized-error req))
+        (on-unauthorized-error e req))
       (catch ForbiddenException e
-        (on-forbidden-error req)))))
+        (on-forbidden-error e req)))))
 
 ;; When using devtools, the browser fetches source maps etc.
 ;; We filter them out to keep the log cleaner.
@@ -262,13 +268,13 @@
   (-> handler
       ((if (:dev env) wrap-dev identity))
       wrap-fix-location-header
-      wrap-unauthorized-and-forbidden
       wrap-logging
       wrap-i18n
       wrap-role-headers
       wrap-context
       wrap-user
       wrap-api-key-or-csrf-token
+      wrap-unauthorized-and-forbidden
       auth/wrap-auth
       (wrap-defaults (wrap-defaults-settings))
       wrap-cache-control

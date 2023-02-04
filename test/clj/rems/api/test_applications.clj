@@ -1609,12 +1609,18 @@
       (let [response (-> (upload-request filecontent)
                          handler)]
         (is (response-is-unauthorized? response))))
+    (testing "uploading attachment without user"
+      (let [response (-> (upload-request filecontent)
+                         (assoc-in [:headers "x-rems-api-key"] api-key)
+                         handler)]
+        (is (response-is-unauthorized? response))))
     (testing "uploading attachment with wrong API key"
       (let [response (-> (upload-request filecontent)
                          (authenticate api-key user-id)
+                         (assoc-in [:headers "x-rems-user-id"] user-id)
                          (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
                          handler)]
-        (is (response-is-unauthorized? response))))
+        (is (response-is-forbidden? response))))
     (testing "uploading attachment as non-applicant"
       (let [response (-> (upload-request filecontent)
                          (authenticate api-key "carl")

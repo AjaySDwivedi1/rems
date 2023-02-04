@@ -31,6 +31,7 @@
 
 (deftest test-api-key-security
   (api-key/add-api-key! "42" {})
+  (api-key/add-api-key! "only-alice" {:users ["alice"]})
   (test-helpers/create-user! {:userid "alice"})
   (test-helpers/create-user! {:userid "owner"} :owner)
   (testing ":api-key role"
@@ -39,14 +40,24 @@
                                (authenticate "42" "owner")
                                handler))))
     (testing "not available when using wrong API key"
-      (let [username "alice"
-            ;; need cookies and csrf to actually get a forbidden instead of "invalid csrf token"
-            ;; TODO check this
-            cookie (login-with-cookies username)
+      (let [resp (-> (request :post "/api/email/send-reminders")
+                     (header "x-rems-user-id" "alice")
+                     (header "x-rems-api-key" "WRONG")
+                     handler)]
+        (is (response-is-forbidden? resp))))
+    (testing "not available when using wrong user"
+      (let [resp (-> (request :post "/api/email/send-reminders")
+                     (header "x-rems-user-id" "owner")
+                     (header "x-rems-api-key" "only-alice")
+                     handler)]
+        (is (response-is-forbidden? resp))))
+    (testing "API checks take priority when the headers are present"
+      (let [cookie (login-with-cookies "alice")
             csrf (get-csrf-token cookie)
             resp (-> (request :post "/api/email/send-reminders")
                      (header "Cookie" cookie)
                      (header "x-csrf-token" csrf)
+                     (header "x-rems-user-id" "alice")
                      (header "x-rems-api-key" "WRONG")
                      handler)]
         (is (response-is-forbidden? resp)))))
@@ -63,8 +74,8 @@
         (testing user
           (is (response-is-ok? (api-response :get "/api/my-applications/" nil
                                              "44" user)))
-          (is (response-is-unauthorized? (api-response :get "/api/my-applications/" nil
-                                                       "44" "owner")))))))
+          (is (response-is-forbidden? (api-response :get "/api/my-applications/" nil
+                                                    "44" "owner")))))))
   (testing "api key path whitelist"
     (api-key/add-api-key! "45" {:comment "all paths" :paths nil})
     (api-key/add-api-key! "46" {:comment "limited paths" :paths [{:method "any"
@@ -86,23 +97,23 @@
         (testing path
           (is (response-is-ok? (api-response :get path nil
                                              "46" "owner")))))
-      (is (response-is-unauthorized? (api-response :get "/api/catalogue-items" nil
-                                                   "46" "owner"))))
+      (is (response-is-forbidden? (api-response :get "/api/catalogue-items" nil
+                                                "46" "owner"))))
     (testing "> api key with whitelist can access only matching paths >"
       (doseq [path ["/api/catalogue?query=param" "/api/catalogue-items"]]
         (testing path
           (is (response-is-ok? (api-response :get path nil
                                              "47" "owner")))))
-      (is (response-is-unauthorized? (api-response :get "/api/applications" nil
-                                                   "47" "owner"))))
+      (is (response-is-forbidden? (api-response :get "/api/applications" nil
+                                                "47" "owner"))))
     (testing "> api key with whitelist can use only matching methods"
       (is (response-is-ok? (api-response :get "/api/users/active" nil
                                          "47" "owner")))
-      (is (response-is-unauthorized? (api-response :post "/api/users/create"
-                                                   {:userid "testing"
-                                                    :name nil
-                                                    :email nil}
-                                                   "47" "owner"))))))
+      (is (response-is-forbidden? (api-response :post "/api/users/create"
+                                                {:userid "testing"
+                                                 :name nil
+                                                 :email nil}
+                                                "47" "owner"))))))
 
 (deftest test-health-api
   ;; create at least one event
