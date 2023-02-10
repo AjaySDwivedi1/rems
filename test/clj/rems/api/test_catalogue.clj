@@ -1,14 +1,15 @@
 (ns ^:integration rems.api.test-catalogue
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [rems.service.catalogue :as catalogue]
-            [rems.api.testing :refer :all]
+            [rems.api.testing :refer [authenticate api-fixture api-call api-response read-ok-body read-body]]
+            [rems.config]
             [rems.db.category :as category]
             [rems.service.test-data :as test-data]
             [rems.db.test-data-helpers :as test-helpers]
             [rems.handler :refer [handler]]
             [rems.testing-util :refer [with-user]]
             [rems.text :refer [format-utc-datetime]]
-            [ring.mock.request :refer :all]))
+            [ring.mock.request :refer [request]]))
 
 (use-fixtures
   :each
@@ -50,7 +51,7 @@
     (with-redefs [rems.config/env (assoc rems.config/env :catalogue-is-public false)]
       (is (api-call :get "/api/catalogue" nil "42" "alice") "should work for a regular user")
       (is (= "unauthorized" (read-body (api-response :get "/api/catalogue" nil nil nil))) "should be unauthorized without authentication")
-      (is (= "unauthorized" (read-body (api-response :get "/api/catalogue" nil "invalid-api-key" nil))) "should not work with wrong api key")
+      (is (= "forbidden" (read-body (api-response :get "/api/catalogue" nil "invalid-api-key" "alice"))) "should not work with wrong api key")
       (is (= "unauthorized" (read-body (api-response :get "/api/catalogue" nil "42" nil))) "should not work without a user"))))
 
 (deftest test-get-catalogue-tree

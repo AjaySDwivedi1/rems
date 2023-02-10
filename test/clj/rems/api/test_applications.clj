@@ -127,15 +127,14 @@
                          handler)]
         (is (response-is-unauthorized? response))))
     (testing "save with session and csrf and wrong api-key"
-      (let [body (-> (request :post "/api/applications/create")
-                     (header "Cookie" cookie)
-                     (header "x-csrf-token" csrf)
-                     (header "x-rems-api-key" "WRONG")
-                     (json-body {:catalogue-item-ids [cat-id]})
-                     handler
-                     assert-response-is-ok
-                     read-body)]
-        (is (:success body))))))
+      (let [response (-> (request :post "/api/applications/create")
+                         (header "Cookie" cookie)
+                         (header "x-csrf-token" csrf)
+                         (header "x-rems-api-key" "WRONG")
+                         (json-body {:catalogue-item-ids [cat-id]})
+                         handler)]
+        (is (response-is-unauthorized? response)
+            "API-key determines code path and user not provided results in an error")))))
 
 (deftest pdf-smoke-test
   (testing "not found"
@@ -2295,9 +2294,9 @@
                     (json-body {:catalogue-item-ids [cat-id]}))]
         (assert-response-is-ok (-> req
                                    handler))
-        (is (response-is-unauthorized? (-> req
-                                           (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
-                                           handler)))))
+        (is (response-is-forbidden? (-> req
+                                        (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
+                                        handler)))))
 
     (testing "send command without authentication"
       (let [req (-> (request :post "/api/applications/submit")
@@ -2314,9 +2313,9 @@
                     (json-body {:application-id app-id}))]
         (assert-response-is-ok (-> req
                                    handler))
-        (is (response-is-unauthorized? (-> req
-                                           (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
-                                           handler)))))))
+        (is (response-is-forbidden? (-> req
+                                        (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
+                                        handler)))))))
 
 (deftest test-applications-api-duplicate-user
   (let [_ (test-helpers/create-user! {:userid "duplicated" :name "Dupli Cated" :email "duplicated@example.com" :mappings {"identity1" "dupe" "identity2" "dupe"}})

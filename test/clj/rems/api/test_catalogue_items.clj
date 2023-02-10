@@ -216,6 +216,7 @@
 
 
 (deftest catalogue-items-api-security-test
+  (test-helpers/create-user! {:userid "alice"})
   (testing "listing without authentication"
     (let [response (-> (request :get (str "/api/catalogue-items"))
                        handler)
@@ -235,15 +236,15 @@
       (is (response-is-unauthorized? response))
       (is (str/includes? body "Invalid anti-forgery token"))))
   (testing "create with wrong API-Key"
-    (is (= "Invalid anti-forgery token"
-           (-> (request :post (str "/api/catalogue-items/create"))
-               (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
-               (json-body {:form 1
-                           :resid 1
-                           :wfid 1
-                           :localizations {}})
-               handler
-               (read-body)))))
+    (is (-> (request :post (str "/api/catalogue-items/create"))
+            (assoc-in [:headers "x-rems-user-id"] "alice")
+            (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
+            (json-body {:form 1
+                        :resid 1
+                        :wfid 1
+                        :localizations {}})
+            handler
+            response-is-forbidden?)))
   (testing "edit without authentication"
     (let [response (-> (request :post (str "/api/catalogue-items/edit"))
                        (json-body {:id 1
@@ -253,13 +254,13 @@
       (is (response-is-unauthorized? response))
       (is (str/includes? body "Invalid anti-forgery token"))))
   (testing "edit with wrong API-Key"
-    (is (= "Invalid anti-forgery token"
-           (-> (request :put (str "/api/catalogue-items/edit"))
-               (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
-               (json-body {:id 1
-                           :localizations {:en {:title "malicious localization"}}})
-               handler
-               (read-body))))))
+    (is (-> (request :put (str "/api/catalogue-items/edit"))
+            (assoc-in [:headers "x-rems-user-id"] "alice")
+            (assoc-in [:headers "x-rems-api-key"] "invalid-api-key")
+            (json-body {:id 1
+                        :localizations {:en {:title "malicious localization"}}})
+            handler
+            response-is-forbidden?))))
 
 (deftest change-form-test
   (let [resource-id (test-helpers/create-resource! {:organization {:organization/id "organization1"}})

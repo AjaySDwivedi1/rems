@@ -305,8 +305,8 @@
         (let [response (-> (request :get "/api/resources")
                            (authenticate api-key user-id)
                            handler)]
-          (is (response-is-unauthorized? response))
-          (is (= "unauthorized" (read-body response)))))
+          (is (response-is-forbidden? response))
+          (is (= "forbidden" (read-body response)))))
       (testing "create"
         (let [response (-> (request :post "/api/resources/create")
                            (authenticate api-key user-id)
@@ -314,8 +314,8 @@
                                        :organization {:organization/id "o"}
                                        :licenses []})
                            handler)]
-          (is (response-is-unauthorized? response))
-          (is (= "Invalid anti-forgery token" (read-body response)))))))
+          (is (response-is-forbidden? response))
+          (is (= "forbidden" (read-body response)))))))
 
   (test-helpers/create-user! {:userid "alice"})
   (testing "without owner role"

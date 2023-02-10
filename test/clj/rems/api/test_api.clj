@@ -10,6 +10,7 @@
 (use-fixtures :once api-fixture)
 
 (deftest test-api-not-found
+  (api-key/add-api-key! "42" {})
   (testing "unknown endpoint"
     (let [resp (-> (request :get "/api/unknown")
                    handler)]

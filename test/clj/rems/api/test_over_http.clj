@@ -46,7 +46,9 @@
         sleep-time (atom nil)
         sleeping-handle-command (fn [cmd application injections]
                                   (when-let [time @sleep-time]
+                                    (prn :sleeping cmd)
                                     (Thread/sleep time))
+                                  (prn :handling cmd)
                                   (old-handle-command cmd application injections))]
     (rems.email.core/try-send-emails!) ;; remove a bit of clutter from the log
     (with-redefs [rems.application.commands/handle-command sleeping-handle-command]
