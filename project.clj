@@ -10,6 +10,7 @@
                  [clj-pdf "2.6.1"]
                  [clj-time "0.15.2"]
                  [com.attendify/schema-refined "0.3.0-alpha5"]
+                 [com.clojure-goes-fast/lazy-require "0.1.1"]
                  [com.draines/postal "2.0.5"]
                  [com.fasterxml.jackson.datatype/jackson-datatype-joda "2.14.1"]
                  [com.stuartsierra/dependency "1.0.0"]
