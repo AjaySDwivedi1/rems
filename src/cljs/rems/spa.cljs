@@ -57,6 +57,7 @@
             [rems.common.roles :as roles]
             [rems.profile :refer [profile-page missing-email-warning]]
             [rems.text :refer [text text-format]]
+            [rems.translations-page :refer [translations-page]]
             [rems.user-settings]
             [rems.util :refer [fetch navigate! replace-url! set-location!]]
             [secretary.core :as secretary])
@@ -190,8 +191,11 @@
 (rf/reg-event-db
  ::user-triggered-navigation
  (fn [db [_]]
-   (.scrollTo js/window 0 0)
-   (assoc db ::grab-focus? true)))
+   (if (:prevent-grab-focus db)
+     db
+     (do
+       (.scrollTo js/window 0 0)
+       (assoc db ::grab-focus? true)))))
 
 (rf/reg-event-db
  ::focus-grabbed
@@ -296,6 +300,7 @@
    :applications applications-page
    :extra-pages extra-pages
    :profile profile-page
+   :translations translations-page
    :rems.accept-invitation/accept-invitation-page accept-invitation/accept-invitation-page
    :rems.actions/accept-invitation accept-invitation-page
    :rems.administration/blacklist blacklist-page
@@ -410,6 +415,10 @@
 
 (secretary/defroute "/guide" []
   (rf/dispatch [:set-active-page :guide]))
+
+(secretary/defroute "/translations" []
+  (rf/dispatch [:rems.translations-page/enter-page])
+  (rf/dispatch [:set-active-page :translations]))
 
 (secretary/defroute "/actions" []
   (rf/dispatch [:rems.actions/enter-page])
