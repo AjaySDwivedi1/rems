@@ -129,6 +129,10 @@
          :event/type (s/enum :application.event/member-uninvited)
          :application/member {:name s/Str
                               :email s/Str}))
+(s/defschema ProcessingStageChangedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/processing-stage-changed)
+         :processing-stage/value s/Str))
 (s/defschema RejectedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/rejected)))
@@ -201,6 +205,7 @@
    :application.event/member-joined MemberJoinedEvent
    :application.event/member-removed MemberRemovedEvent
    :application.event/member-uninvited MemberUninvitedEvent
+   :application.event/processing-stage-changed ProcessingStageChangedEvent
    :application.event/rejected RejectedEvent
    :application.event/remarked RemarkedEvent
    :application.event/resources-changed ResourcesChangedEvent

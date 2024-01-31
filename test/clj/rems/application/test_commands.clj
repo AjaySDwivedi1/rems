@@ -307,6 +307,11 @@
                            :application/comment "handler's remark"
                            :event/public false
                            :event/attachments [{:attachment/id 1}]})
+(def dummy-processing-stage-changed-event {:event/type :application.event/processing-stage-changed
+                                           :event/time test-time
+                                           :event/actor handler-user-id
+                                           :application/id app-id
+                                           :processing-stage/value "started"})
 
 ;;; Tests
 
@@ -2043,3 +2048,51 @@
                         :expires-on (time/plus test-time (time/hours 1))}
                        (build-application-view [dummy-created-event]))))))
 
+(deftest change-processing-stage-command
+  (testing "applicant or reviewer cannot change application processing stage"
+    (is (= {:errors [{:type :forbidden}]}
+           (fail-command {:type :application.command/change-processing-stage
+                          :actor applicant-user-id
+                          :processing-stage "started"}
+                         (build-application-view [dummy-created-event
+                                                  dummy-submitted-event]))
+           (fail-command {:type :application.command/change-processing-stage
+                          :actor reviewer-user-id
+                          :processing-stage "started"}
+                         (build-application-view [dummy-created-event
+                                                  dummy-submitted-event
+                                                  dummy-review-requested-event])))))
+  (testing "cannot change draft processing stage"
+    (is (= {:errors [{:type :forbidden}]}
+           (fail-command {:type :application.command/change-processing-stage
+                          :actor handler-user-id
+                          :processing-stage "started"}
+                         (build-application-view [dummy-created-event])))))
+  (testing "handler can change application processing stage"
+    (is (= {:event/type :application.event/processing-stage-changed
+            :event/time test-time
+            :event/actor handler-user-id
+            :application/id app-id
+            :application/comment "thank you for your patience"
+            :event/attachments [{:attachment/id 1}]
+            :processing-stage/value "started"}
+           (ok-command {:type :application.command/change-processing-stage
+                        :actor handler-user-id
+                        :comment "thank you for your patience"
+                        :attachments [{:attachment/id 1}]
+                        :processing-stage "started"}
+                       (build-application-view [dummy-created-event
+                                                dummy-submitted-event])))))
+  (testing "handler can change processing stage many times"
+    (is (= {:event/type :application.event/processing-stage-changed
+            :event/time test-time
+            :event/actor handler-user-id
+            :application/id app-id
+            :processing-stage/value "in-review"}
+           (ok-command {:type :application.command/change-processing-stage
+                        :actor handler-user-id
+                        :processing-stage "in-review"}
+                       (build-application-view [dummy-created-event
+                                                dummy-submitted-event
+                                                dummy-processing-stage-changed-event
+                                                dummy-remarked-event]))))))

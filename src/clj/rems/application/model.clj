@@ -270,6 +270,11 @@
             [:application/votes (:event/actor event)]
             (:vote/value event)))
 
+(defmethod application-base-view :application.event/processing-stage-changed
+  [application event]
+  (assoc application
+         :application/processing-stage (:processing-stage/value event)))
+
 (deftest test-event-type-specific-application-view
   (testing "supports all event types"
     (is (= (set (keys events/event-schemas))
@@ -296,6 +301,7 @@
     {:permission :application.command/add-member}
     {:permission :application.command/assign-external-id}
     {:permission :application.command/change-applicant}
+    {:permission :application.command/change-processing-stage}
     {:permission :application.command/change-resources}
     {:permission :application.command/close}
     {:permission :application.command/copy-as-new}
@@ -331,6 +337,7 @@
     {:permission :application.command/add-member}
     {:permission :application.command/assign-external-id}
     {:permission :application.command/change-applicant}
+    {:permission :application.command/change-processing-stage}
     {:permission :application.command/change-resources}
     {:permission :application.command/close}
     {:permission :application.command/copy-as-new}
