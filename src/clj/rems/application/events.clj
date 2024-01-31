@@ -1,5 +1,5 @@
 (ns rems.application.events
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [schema-refined.core :as r]
             [schema.core :as s]
             [rems.schema-base :as schema-base]
@@ -14,6 +14,20 @@
          (s/optional-key :application/comment) s/Str
          (s/optional-key :event/attachments) [EventAttachment]))
 
+(def workflow-types
+  #{:workflow/decider
+    :workflow/default
+    :workflow/master})
+
+(s/defschema AttachmentsRedactedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/attachments-redacted)
+         :event/redacted-attachments [EventAttachment]
+         :event/public s/Bool))
+(s/defschema ApplicantChangedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/applicant-changed)
+         :application/applicant schema-base/User))
 (s/defschema ApprovedEvent
   (assoc EventWithComment
          ;; single-value enums are supported by swagger, unlike s/eq.
@@ -24,15 +38,6 @@
 (s/defschema ClosedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/closed)))
-(s/defschema ReviewedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/reviewed)
-         :application/request-id s/Uuid))
-(s/defschema ReviewRequestedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/review-requested)
-         :application/request-id s/Uuid
-         :application/reviewers [schema-base/UserId]))
 (s/defschema CopiedFromEvent
   (assoc schema-base/EventBase
          :event/type (s/enum :application.event/copied-from)
@@ -43,10 +48,6 @@
          :event/type (s/enum :application.event/copied-to)
          :application/copied-to {:application/id s/Int
                                  :application/external-id s/Str}))
-(def workflow-types
-  #{:workflow/decider
-    :workflow/default
-    :workflow/master})
 (s/defschema CreatedEvent
   (assoc schema-base/EventBase
          :event/type (s/enum :application.event/created)
@@ -62,6 +63,18 @@
          :event/type (s/enum :application.event/decided)
          :application/request-id s/Uuid
          :application/decision (s/enum :approved :rejected)))
+(s/defschema DeciderInvitedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/decider-invited)
+         :application/decider {:name s/Str
+                               :email s/Str}
+         ;; TODO allocate request-id already here?
+         :invitation/token s/Str))
+(s/defschema DeciderJoinedEvent
+  (assoc schema-base/EventBase
+         :event/type (s/enum :application.event/decider-joined)
+         :application/request-id s/Uuid
+         :invitation/token s/Str))
 (s/defschema DecisionRequestedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/decision-requested)
@@ -116,39 +129,6 @@
          :event/type (s/enum :application.event/member-uninvited)
          :application/member {:name s/Str
                               :email s/Str}))
-(s/defschema AttachmentsRedactedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/attachments-redacted)
-         :event/redacted-attachments [EventAttachment]
-         :event/public s/Bool))
-(s/defschema ApplicantChangedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/applicant-changed)
-         :application/applicant schema-base/User))
-(s/defschema ReviewerInvitedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/reviewer-invited)
-         :application/reviewer {:name s/Str
-                                :email s/Str}
-         ;; TODO allocate request-id already here?
-         :invitation/token s/Str))
-(s/defschema ReviewerJoinedEvent
-  (assoc schema-base/EventBase
-         :event/type (s/enum :application.event/reviewer-joined)
-         :application/request-id s/Uuid
-         :invitation/token s/Str))
-(s/defschema DeciderInvitedEvent
-  (assoc EventWithComment
-         :event/type (s/enum :application.event/decider-invited)
-         :application/decider {:name s/Str
-                               :email s/Str}
-         ;; TODO allocate request-id already here?
-         :invitation/token s/Str))
-(s/defschema DeciderJoinedEvent
-  (assoc schema-base/EventBase
-         :event/type (s/enum :application.event/decider-joined)
-         :application/request-id s/Uuid
-         :invitation/token s/Str))
 (s/defschema RejectedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/rejected)))
@@ -166,9 +146,30 @@
 (s/defschema ReturnedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/returned)))
+(s/defschema ReviewedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/reviewed)
+         :application/request-id s/Uuid))
 (s/defschema RevokedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/revoked)))
+(s/defschema ReviewRequestedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/review-requested)
+         :application/request-id s/Uuid
+         :application/reviewers [schema-base/UserId]))
+(s/defschema ReviewerInvitedEvent
+  (assoc EventWithComment
+         :event/type (s/enum :application.event/reviewer-invited)
+         :application/reviewer {:name s/Str
+                                :email s/Str}
+         ;; TODO allocate request-id already here?
+         :invitation/token s/Str))
+(s/defschema ReviewerJoinedEvent
+  (assoc schema-base/EventBase
+         :event/type (s/enum :application.event/reviewer-joined)
+         :application/request-id s/Uuid
+         :invitation/token s/Str))
 (s/defschema SubmittedEvent
   (assoc schema-base/EventBase
          :event/type (s/enum :application.event/submitted)))
@@ -182,8 +183,6 @@
    :application.event/applicant-changed ApplicantChangedEvent
    :application.event/approved ApprovedEvent
    :application.event/closed ClosedEvent
-   :application.event/review-requested ReviewRequestedEvent
-   :application.event/reviewed ReviewedEvent
    :application.event/copied-from CopiedFromEvent
    :application.event/copied-to CopiedToEvent
    :application.event/created CreatedEvent
@@ -206,9 +205,11 @@
    :application.event/remarked RemarkedEvent
    :application.event/resources-changed ResourcesChangedEvent
    :application.event/returned ReturnedEvent
+   :application.event/reviewed ReviewedEvent
+   :application.event/revoked RevokedEvent
+   :application.event/review-requested ReviewRequestedEvent
    :application.event/reviewer-invited ReviewerInvitedEvent
    :application.event/reviewer-joined ReviewerJoinedEvent
-   :application.event/revoked RevokedEvent
    :application.event/submitted SubmittedEvent
    :application.event/voted VotedEvent})
 
