@@ -50,11 +50,12 @@
     nil))
 
 (deftest test-find-map-params
+  (is (= nil (find-map-params (constantly "arg %:x%, arg %:long.ns/y%, args %:x% %:long.ns/y% %:z%"))))
+  (is (= nil (find-map-params nil)))
+  (is (= nil (find-map-params "%1 approved the application.")))
   (is (= #{"x" "long.ns/y" "z"}
          (find-map-params "arg %:x%, arg %:long.ns/y%, args %:x% %:long.ns/y% %:z%")
-         (find-map-params [:div "arg %:x%" [:span "arg %:long.ns/y%"] [:span "args %:x% %:long.ns/y% %:z%"]])))
-  (is (nil? (find-map-params (constantly "arg %:x%, arg %:long.ns/y%, args %:x% %:long.ns/y% %:z%"))))
-  (is (nil? (find-map-params nil))))
+         (find-map-params [:div "arg %:x%" [:span "arg %:long.ns/y%"] [:span "args %:x% %:long.ns/y% %:z%"]]))))
 
 (def ^:private get-default-resource-compiler (:resource-compiler taoensso.tempura/default-tr-opts))
 
@@ -66,17 +67,19 @@
                        vargs)]
         (f res-args)))))
 
-(defn- get-map-compiler [{:keys [resource resource-keys]}]
-  (let [f (get-default-resource-compiler resource)]
+(defn- get-map-compiler [original-resource]
+  (let [{:keys [resource resource-keys]} (replace-map-args original-resource)
+        f (get-default-resource-compiler resource)]
     (fn compile-map-args [vargs]
-      (assert (map? (first vargs)) {:resource resource
+      (assert (map? (first vargs)) {:original-resource original-resource
+                                    :resource resource
                                     :vargs vargs})
       (let [res-args (mapv (first vargs) resource-keys)]
         (f res-args)))))
 
 (defn- get-resource-compiler [resource]
   (if (seq (find-map-params resource))
-    (get-map-compiler (replace-map-args resource))
+    (get-map-compiler resource)
     (get-vec-compiler resource)))
 
 (defn tr

@@ -21,6 +21,7 @@
             :cancel "Peruuta"
             :change-applicant "Tee hakija"
             :change-resources "Muuta resursseja"
+            :change-processing-state "Muuta alitilaa"
             :clear "Tyhjennä"
             :close "Sulje hakemus"
             :close-intro [:div.intro [:p "Huomaa, että jos hakemus suljetaan, sitä ei voi enää muokata tai lähettää."]]
@@ -149,6 +150,8 @@
                    :organizations "Organisaatiot"
                    :owners "Omistajat"
                    :preview "Esikatselu"
+                   :processing-state "Hakemuksen alitila"
+                   :processing-states "Hakemuksen alitilat"
                    :remove "Poista"
                    :reports "Raportit"
                    :resource "Resurssi"
@@ -170,6 +173,7 @@
                    :workflows "Työvuot"
                    :workflow-anonymize-handling-explanation "Tämä työvuo piilottaa käsittelijöiden henkilökohtaiset tunnistetiedot (kuten nimen ja sähköpostiosoitteen) hakijoilta."
                    :workflow-disabled-commands-explanation [:p "Tämä työvuo poistaa toimintoja käyttäjiltä ehtojen täyttyessä. Toiminnot, hakemusten tilat ja käyttäjien roolit löytyvät " [:a {:href "https://github.com/CSCfi/rems/blob/master/docs/application-permissions.md" :target :_blank} "REMSin Github-sivulta."]]
+                   :workflow-processing-states-explanation "Tämä työvuo sallii käsittelijän päivittää hakemuksen yksityiskohtaisempaa alitilaa."
                    :workflow-type "Työvuon tyyppi"}
   :applicant-info {:applicant "Hakija"
                    :applicants "Hakijat"
@@ -200,7 +204,7 @@
                          :shown-to-applicant "Näytetään hakijalle"}
                  :events {:applicant-changed "%1 vaihtoi hakijan henkilöksi %2."
                           :approved "%1 hyväksyi hakemuksen."
-                          :attachments-redacted "%1 poisti liitetiedostoja. %2"
+                          :attachments-redacted "%1 poisti liitetiedostoja."
                           :closed "%1 sulki hakemuksen."
                           :copied-from "Tämä hakemus on kopio vanhasta hakemuksesta."
                           :copied-to "%1 kopioi hakemuksen uudeksi hakemukseksi."
@@ -220,6 +224,7 @@
                           :member-joined "Henkilö %1 liittyi hakemuksen jäseneksi."
                           :member-removed "%1 poisti hakemuksesta käyttäjän %2."
                           :member-uninvited "%1 poisti hakemuksesta henkilön %2."
+                          :processing-state-changed "%:event-actor% päivitti hakemuksen alitilaan %:state%."
                           :rejected "%1 hylkäsi hakemuksen."
                           :remarked "%1 kirjasi huomion."
                           :resources-changed "%1 muutti haettavia resursseja. Uudet resurssit: %2."
@@ -377,7 +382,9 @@
   :create-resource {:licenses-selection "Lisenssit"
                     :resid "Resurssin tunniste"
                     :resid-placeholder "urn:test:fi:some-uuid"}
-  :create-workflow {:create-new-rule "Uusi sääntö"
+  :create-workflow {:anonymize-handling-explanation "Voit piilottaa hakemuksen käsittelijöiden henkilökohtaiset tunnistetiedot (kuten nimen ja sähköpostiosoitteen) hakijoilta."
+                    :create-new-processing-state "Uusi alitila"
+                    :create-new-rule "Uusi sääntö"
                     :decider-workflow "Päättäjätyövuo"
                     :decider-workflow-description "Käsittelijällä ei ole valtuutta hyväksyä tai hylätä hakemusta, vaan vain erillisellä hyväksyjällä on."
                     :default-workflow "Oletustyövuo"
@@ -386,6 +393,7 @@
                     :handlers "Käsittelijät"
                     :master-workflow "Master-työvuo"
                     :master-workflow-description "VAIN TESTAUKSEEN. Unioni kaikista mahdollista työvoista."
+                    :processing-states-explanation "Käsittelijät voivat muuttaa hakemuksen yksityiskohtaisempaa alitilaa. TODO event-notification"
                     :rule "Sääntö"
                     :title "Työvuon nimi"
                     :voting-explanation "Hakemuksen käsittelyyn voi liittyä äänestys."}

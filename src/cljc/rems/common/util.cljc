@@ -1,8 +1,8 @@
 (ns rems.common.util
-  (:require [medley.core :refer [map-keys map-vals remove-keys]]
-            [clojure.set :as set]
+  (:require [clojure.set :as set]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [medley.core :refer [map-keys map-vals remove-keys]]))
 
 ;; regex from https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/email#Validation
 (def +email-regex+ #"[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*")
@@ -422,6 +422,12 @@
     (let [x {:foo 2}]
       (is (= "2/" (andstr (:foo x) "/")))
       (is (= "(2)" (andstr "(" (:foo x) ")"))))))
+
+(defn not-blank
+  "Like `not-empty` but for strings. Returns nil when (clojure.string/blank? x) is truthy, and `x` otherwise."
+  [^CharSequence x]
+  (when-not (str/blank? x)
+    x))
 
 (defn deep-merge
   "Recursively merges maps and sequentials so that the values in `b`

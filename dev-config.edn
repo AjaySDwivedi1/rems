@@ -118,5 +118,5 @@
                     :logging true}
 
  :enable-voting true
- :enable-processing-stages true
+ :enable-processing-states true
  :tables {:rems.catalogue/catalogue {:paging? false}}}

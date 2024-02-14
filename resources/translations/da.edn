@@ -21,6 +21,7 @@
             :cancel "Afbryd"
             :change-applicant "Gør til ansøger"
             :change-resources "Rediger ressourcer"
+            :change-processing-state nil
             :clear "Ryd"
             :close "Luk ansøgning"
             :close-intro [:div.intro [:p "NB: Hvis ansøgningen er lukket, kan den ikke ændres eller indsendes længere."]]
@@ -233,6 +234,7 @@
                           :member-joined "%1 blev deltager."
                           :member-removed "%1 fjernede %2 fra ansøgningen."
                           :member-uninvited "%1 fjernede %2 fra ansøgningen."
+                          :processing-state-changed nil
                           :rejected "%1 afviste ansøgningen."
                           :remarked "%1 tilføjede en bemærkning."
                           ;; %2 - comma-separated list of catalogue item anems

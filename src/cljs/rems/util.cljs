@@ -2,8 +2,9 @@
   (:require [accountant.core :as accountant]
             [ajax.core :refer [GET PUT POST]]
             [clojure.string :as str]
-            [clojure.test :refer [deftest are testing]]
+            [clojure.test :refer [are deftest is testing]]
             [goog.string :refer [format]]
+            [reagent.core :as r]
             [re-frame.core :as rf]))
 
 (defn replace-url!
@@ -212,3 +213,22 @@
       nil nil
       nil {}
       nil [])))
+
+(defn create-dispatch
+  "Convenience function, creates partial that dispatches re-frame event with
+   any args conjoined into vector `v`. 2-argument form prints args before dispatch."
+  ([v] (r/partial (comp rf/dispatch conj) (vec v)))
+  ([_debug v] (r/partial (comp rf/dispatch #(do (println %) %) conj) (vec v))))
+
+(deftest test-create-dispatch
+  (testing "Arguments are dispatched in correct order"
+    (with-redefs [re-frame.core/dispatch identity]
+      (is (= [::test] (apply (create-dispatch [::test]) nil)))
+      (is (= [::test [1] 2 3] (apply (create-dispatch [::test [1] 2]) [3]))))))
+
+(defn at-least-one-localization
+  "Returns true if `value` has at least one non-blank localization, and else nil."
+  [value]
+  (->> @(rf/subscribe [:languages])
+       (some (fn [lang]
+               (not (str/blank? (get value lang)))))))

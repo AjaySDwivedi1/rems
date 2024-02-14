@@ -1,6 +1,7 @@
 (ns ^:integration rems.test-pdf
   (:require [clj-time.core :as time]
-            [clojure.test :refer :all]
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [rems.context :as context]
             [rems.db.applications :as applications]
             [rems.db.core :as db]
             [rems.service.test-data :as test-data]
@@ -13,7 +14,9 @@
 (use-fixtures
   :once
   utc-fixture
-  test-db-fixture)
+  test-db-fixture
+  (fn [f] (binding [context/*print-test-invocations* true]
+            (f))))
 
 (use-fixtures :each rollback-db-fixture)
 
@@ -39,12 +42,13 @@
     (is (some? (with-language :en (pdf/application-to-pdf-bytes data))))))
 
 (deftest test-pdf-private-form-fields
-  (test-helpers/create-user! {:userid "alice" :name "Alice Applicant" :email "alice@example.com"})
-  (test-helpers/create-user! {:userid "carl" :name "Carl Reviewer" :email "carl@example.com"})
-  (test-helpers/create-user! {:userid "david" :name "David Decider" :email "david@example.com"})
-  (let [resource (test-helpers/create-resource! {:resource-ext-id "pdf-resource-ext"})
+  (let [applicant (test-helpers/create-user! (test-helpers/getx-test-user-data :applicant1))
+        handler (test-helpers/create-user! (test-helpers/getx-test-user-data :approver1))
+        reviewer (test-helpers/create-user! (test-helpers/getx-test-user-data :reviewer))
+        decider (test-helpers/create-user! (test-helpers/getx-test-user-data :decider))
+        resource (test-helpers/create-resource! {:resource-ext-id "pdf-resource-ext"})
         resource-2 (test-helpers/create-resource! {:resource-ext-id "pdf-resource-2-ext"})
-        wfid (test-helpers/create-workflow! {})
+        wfid (test-helpers/create-workflow! {:handlers [handler]})
         form (test-helpers/create-form! {:form/internal-name  "Form"
                                          :form/external-title {:en "Form"
                                                                :fi  "Lomake"
@@ -82,8 +86,6 @@
                                                                        :fi "Resurssi 2"
                                                                        :sv "Resurs 2"}
                                                                :form-id private-form})
-        applicant "alice"
-        handler "developer"
         application-id (test-helpers/create-application! {:actor applicant
                                                           :catalogue-item-ids [catalogue-item catalogue-item-2]
                                                           :time (time/date-time 2000)})]
@@ -102,21 +104,21 @@
                               :type :application.command/request-review
                               :application-id application-id
                               :actor handler
-                              :reviewers ["carl"]
+                              :reviewers [reviewer]
                               :comment "please have a look"}))
     (testing "decide"
       (test-helpers/command! {:time (time/date-time 2003)
                               :application-id application-id
                               :type :application.command/request-decision
                               :comment "please decide"
-                              :deciders ["david"]
+                              :deciders [decider]
                               :actor handler})
       (test-helpers/command! {:time (time/date-time 2003)
                               :application-id application-id
                               :type :application.command/decide
                               :comment "I have decided"
                               :decision :approved
-                              :actor "david"}))
+                              :actor decider}))
 
     (testing "alice should not see reviewer and decider actions"
       (is (= [{}
@@ -153,7 +155,7 @@
                   [:phrase "2001-01-01 00:00" " " "Alice Applicant lämnade in ansökan." nil nil nil]]]]]]
              (with-language :sv
                (with-fixed-time (time/date-time 2010)
-                 (#'pdf/render-application (applications/get-application-for-user "alice" application-id)))))))
+                 (#'pdf/render-application (applications/get-application-for-user applicant application-id)))))))
     (testing "handler should see complete application"
       (is (= [{}
               [[:heading pdf/heading-style "Application 2000/1: "]
@@ -203,20 +205,20 @@
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "Developer requested a decision from David Decider."
+                   "Developer requested a decision from Diana Decider."
                    nil
                    "\nComment: please decide"
                    nil]
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "David Decider filed a decision for the application."
-                   "\nDavid Decider approved the application."
+                   "Diana Decider filed a decision for the application."
+                   "\nDiana Decider approved the application."
                    "\nComment: I have decided"
                    nil]]]]]]
              (with-language :en
                (with-fixed-time (time/date-time 2010)
-                 (#'pdf/render-application (applications/get-application-for-user "developer" application-id)))))))
+                 (#'pdf/render-application (applications/get-application-for-user handler application-id)))))))
     (testing "decider should see complete application"
       (is (= [{}
               [[:heading pdf/heading-style "Hakemus 2000/1: "]
@@ -266,20 +268,20 @@
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "Developer pyysi päätöstä käyttäjältä David Decider."
+                   "Developer pyysi päätöstä käyttäjältä Diana Decider."
                    nil
                    "\nKommentti: please decide"
                    nil]
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "David Decider teki päätöksen hakemukselle."
-                   "\nDavid Decider hyväksyi hakemuksen."
+                   "Diana Decider teki päätöksen hakemukselle."
+                   "\nDiana Decider hyväksyi hakemuksen."
                    "\nKommentti: I have decided"
                    nil]]]]]]
              (with-language :fi
                (with-fixed-time (time/date-time 2010)
-                 (#'pdf/render-application (applications/get-application-for-user "david" application-id)))))))
+                 (#'pdf/render-application (applications/get-application-for-user decider application-id)))))))
     (testing "reviewer should not see private fields"
       (is (= [{}
               [[:heading pdf/heading-style "Ansökan 2000/1: "]
@@ -318,26 +320,27 @@
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "Developer begärde beslut från användare David Decider."
+                   "Developer begärde beslut från användare Diana Decider."
                    nil
                    "\nKommentar: please decide"
                    nil]
                   [:phrase
                    "2003-01-01 00:00"
                    " "
-                   "David Decider behandlade ansökan."
-                   "\nDavid Decider godkände ansökan."
+                   "Diana Decider behandlade ansökan."
+                   "\nDiana Decider godkände ansökan."
                    "\nKommentar: I have decided"
                    nil]]]]]]
              (with-language :sv
                (with-fixed-time (time/date-time 2010)
-                 (#'pdf/render-application (applications/get-application-for-user "carl" application-id)))))))))
+                 (#'pdf/render-application (applications/get-application-for-user reviewer application-id)))))))))
 
 (deftest test-pdf-gold-standard
-  (test-helpers/create-user! {:userid "alice" :name "Alice Applicant" :email "alice@example.com"})
-  (test-helpers/create-user! {:userid "beth" :name "Beth Applicant" :email "beth@example.com"})
-  (test-helpers/create-user! {:userid "david" :name "David Decider" :email "david@example.com"})
-  (let [lic1 (test-helpers/create-license! {:license/type :link
+  (let [applicant (test-helpers/create-user! (test-helpers/getx-test-user-data :applicant1))
+        handler (test-helpers/create-user! (test-helpers/getx-test-user-data :approver1))
+        member (test-helpers/create-user! {:userid "beth" :name "Beth Applicant" :email "beth@example.com"})
+        decider (test-helpers/create-user! (test-helpers/getx-test-user-data :decider))
+        lic1 (test-helpers/create-license! {:license/type :link
                                             :license/title {:en "Google license"
                                                             :fi "Google-lisenssi"}
                                             :license/link {:en "http://google.com"
@@ -366,11 +369,9 @@
                                                              :title {:en "Catalogue item"
                                                                      :fi "Katalogi-itemi"}
                                                              :form-id form})
-        applicant "alice"
         application-id (test-helpers/create-application! {:actor applicant
                                                           :catalogue-item-ids [catalogue-item]
-                                                          :time (time/date-time 2000)})
-        handler "developer"]
+                                                          :time (time/date-time 2000)})]
     (testing "fill and submit"
       (let [attachment-1 (:id (db/save-attachment! {:application application-id
                                                     :user handler
@@ -413,21 +414,21 @@
       (test-helpers/command! {:time (time/date-time 2002)
                               :application-id application-id
                               :type :application.command/add-member
-                              :member {:userid "beth"}
+                              :member {:userid member}
                               :actor handler}))
     (testing "decide"
       (test-helpers/command! {:time (time/date-time 2003)
                               :application-id application-id
                               :type :application.command/request-decision
                               :comment "please decide"
-                              :deciders ["david"]
+                              :deciders [decider]
                               :actor handler})
       (test-helpers/command! {:time (time/date-time 2003)
                               :application-id application-id
                               :type :application.command/decide
                               :comment "I have decided"
                               :decision :approved
-                              :actor "david"}))
+                              :actor decider}))
     (testing "approve"
       (let [att1 (:id (db/save-attachment! {:application application-id
                                             :user handler
@@ -537,8 +538,8 @@
                   [:phrase "2000-01-01 00:00" " " "Alice Applicant accepted the terms of use." nil nil nil]
                   [:phrase "2001-01-01 00:00" " " "Alice Applicant submitted the application for review." nil nil nil]
                   [:phrase "2002-01-01 00:00" " " "Developer added Beth Applicant to the application." nil nil nil]
-                  [:phrase "2003-01-01 00:00" " " "Developer requested a decision from David Decider." nil "\nComment: please decide" nil]
-                  [:phrase "2003-01-01 00:00" " " "David Decider filed a decision for the application." "\nDavid Decider approved the application." "\nComment: I have decided" nil]
+                  [:phrase "2003-01-01 00:00" " " "Developer requested a decision from Diana Decider." nil "\nComment: please decide" nil]
+                  [:phrase "2003-01-01 00:00" " " "Diana Decider filed a decision for the application." "\nDiana Decider approved the application." "\nComment: I have decided" nil]
                   [:phrase "2003-01-01 00:00" " " "Developer approved the application." nil "\nComment: approved" "\nAttachments: file1.txt, file2.pdf"]]]]]]
              (with-language :en
                (with-fixed-time (time/date-time 2010)

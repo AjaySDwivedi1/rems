@@ -17,10 +17,10 @@
             [re-frame.core :as rf]
             [rems.atoms :as atoms :refer [info-field textarea]]
             [rems.collapsible :as collapsible]
-            [rems.dropdown :as dropdown]
-            [rems.fields :as fields]
             [rems.common.roles :as roles]
             [rems.common.util :refer [clamp parse-int]]
+            [rems.dropdown :as dropdown]
+            [rems.fields :as fields]
             [rems.text :refer [text text-format]]))
 
 (defn- key-to-id [key]
@@ -69,20 +69,20 @@
 
 (defn text-field
   "A basic text field, full page width."
-  [context keys]
-  (input-field (merge keys {:context context :type "text"})))
+  [context opts]
+  (input-field (merge opts {:context context :type "text"})))
 
 (defn text-field-inline
   "A basic text field, label next to field"
-  [context keys]
-  (input-field (merge keys {:context context :type "text" :inline? true})))
+  [context opts]
+  (input-field (merge opts {:context context :type "text" :inline? true})))
 
 (defn number-field
   "A basic number field, full page width."
-  [context keys]
-  (input-field (merge keys {:context context
+  [context opts]
+  (input-field (merge opts {:context context
                             :type "number"
-                            :normalizer #(some-> % parse-int (clamp (:min keys 0) (:max keys 1000000)))
+                            :normalizer #(some-> % parse-int (clamp (:min opts 0) (:max opts 1000000)))
                             :min 0
                             :max 1000000})))
 
@@ -152,7 +152,7 @@
                       @(rf/subscribe [(:get-form-errors context)]))
         keys (if localizations-key
                [:localizations lang localizations-key]
-               (conj keys-prefix lang))
+               (conj (vec keys-prefix) lang))
         normalizer (or normalizer identity)
         on-change (or on-change (fn [_]))
         id (keys-to-id keys)
@@ -315,7 +315,7 @@
         form-errors (when (:get-form-errors context)
                       @(rf/subscribe [(:get-form-errors context)]))
         item-selected? #(= (:organization/id %) (:organization/id value))]
-    [:div.form-group
+    [:div.form-group.field
      [:label.administration-field-label {:for id} label]
      (if (or readonly disallowed)
        [fields/readonly-field {:id id
@@ -339,7 +339,7 @@
                       @(rf/subscribe [(:get-form-errors context)]))
         id (keys-to-id keys)]
     ;; TODO: format readonly value in user locale (give field-wrapper a formatted :value and :previous-value in opts)
-    [:div.form-group
+    [:div.form-group.field
      [:label.administration-field-label {:for id} label]
      [:input.form-control {:type "date"
                            :id id

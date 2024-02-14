@@ -1,5 +1,6 @@
 (ns rems.text
-  (:require [clojure.string :as str]
+  (:require [better-cond.core :as b]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             #?(:clj [clj-time.core :as time]
                :cljs [cljs-time.core :as time])
@@ -8,6 +9,7 @@
             #?(:cljs [cljs-time.coerce :as time-coerce])
             #?(:clj [rems.locales]
                :cljs [re-frame.core :as rf])
+            #?(:cljs [reagent.core :as r])
             [rems.common.application-util :as application-util]
             #?(:clj [rems.context :as context])
             [rems.tempura]))
@@ -38,6 +40,16 @@
                             @(rf/subscribe [:language])
                             [k :t/missing (failsafe-fallback k args)]
                             args)))
+
+(defn text-format-fn
+  "Creates function that calls text-format with `k` and `val-or-fns`. Any later args
+  are transformed and applied."
+  [k & vals-or-fns]
+  (let [f (fn wrapped-text-format [& args]
+            (apply text-format k (->> vals-or-fns
+                                      (mapv #(cond-> % (fn? %) (apply args))))))]
+    #?(:clj f
+       :cljs (r/partial f))))
 
 (defn text-format-map
   "Return the tempura translation for a given key and argument map:
@@ -106,8 +118,11 @@
    :application.state/returned :t.applications.states/returned
    :application.state/revoked :t.applications.states/revoked})
 
-(defn localize-state [state]
-  (text (get states state :t.applications.states/unknown)))
+(defn localize-state
+  ([state]
+   (text (get states state :t.applications.states/unknown)))
+  ([state processing-state]
+   (text-format :t.label/parens (localize-state state) (localized processing-state))))
 
 (def ^:private todos
   {:new-application :t.applications.todos/new-application
@@ -193,6 +208,7 @@
    :application.event/member-joined :t.applications.events/member-joined
    :application.event/member-removed :t.applications.events/member-removed
    :application.event/member-uninvited :t.applications.events/member-uninvited
+   :application.event/processing-state-changed :t.applications.events/processing-state-changed
    :application.event/rejected :t.applications.events/rejected
    :application.event/remarked :t.applications.events/remarked
    :application.event/resources-changed :t.applications.events/resources-changed
@@ -210,75 +226,108 @@
     "rems-handler" (text :t.roles/anonymous-handler)
     (application-util/get-member-name user)))
 
-(defn localize-decision [event]
-  (when-let [decision (:application/decision event)]
-    (text-format
-     (case decision
-       :approved :t.applications.events/approved
-       :rejected :t.applications.events/rejected
-       :t.applications.events/unknown)
-     (localize-user (:event/actor-attributes event)))))
-
 (defn localize-invitation [{:keys [name email]}]
   (str name " <" email ">"))
 
+(defn localize-vote [vote]
+  (let [vote-key (case (name vote)
+                   "accept" :t.applications.voting.votes/accept
+                   "empty" :t.applications.voting.votes/empty
+                   "reject" :t.applications.voting.votes/reject
+                   nil)]
+    (text vote-key :t/unknown)))
+
+(defn localize-processing-state [state]
+  (let [state-key (case (name state)
+                    "in-progress" :t.applications.processing-states/in-progress
+                    "initial-approval" :t.applications.processing-states/initial-approval
+                    nil)]
+    (text state-key :t/unknown)))
+
+(defn- get-event-params
+  "Returns extra localization params for event, if any."
+  [event]
+  (case (:event/type event)
+    :application.event/applicant-changed
+    {:new-applicant (localize-user (:application/applicant event))}
+
+    :application.event/created
+    {:application-external-id (:application/external-id event)}
+
+    :application.event/decider-invited
+    {:invited-user (localize-invitation (:application/decider event))}
+
+    :application.event/decision-requested
+    {:requested-users (str/join ", " (mapv localize-user
+                                           (:application/deciders event)))}
+
+    :application.event/external-id-assigned
+    {:application-external-id (:application/external-id event)}
+
+    :application.event/member-added
+    {:added-user (localize-user (:application/member event))}
+
+    :application.event/member-invited
+    {:invited-user (localize-invitation (:application/member event))}
+
+    :application.event/member-removed
+    {:removed-user (localize-user (:application/member event))}
+
+    :application.event/member-uninvited
+    {:uninvited-user (localize-invitation (:application/member event))}
+
+    :application.event/processing-state-changed
+    {:state (or (localized (:processing-state/title event))
+                (:processing-state/value event))}
+
+    :application.event/resources-changed
+    {:catalogue-items (str/join ", " (mapv #(localized (:catalogue-item/title %))
+                                           (:application/resources event)))}
+
+    :application.event/reviewer-invited
+    {:invited-user (localize-invitation (:application/reviewer event))}
+
+    :application.event/review-requested
+    {:requested-users (str/join ", " (mapv localize-user
+                                           (:application/reviewers event)))}
+
+    :application.event/voted
+    {:vote (when-not (str/blank? (:vote/value event))
+             (localize-vote (:vote/value event)))}
+
+    nil))
+
+(defn localize-decision [event]
+  (b/cond
+    :when-let [decision (:application/decision event)]
+
+    :let [decision-localization (case decision
+                                  :approved :t.applications.events/approved
+                                  :rejected :t.applications.events/rejected)
+          params {:event-actor (localize-user (:event/actor-attributes event))}]
+    (text-format-map decision-localization
+                     params
+                     [:event-actor])))
+
 (defn localize-event [event]
-  (let [event-type (:event/type event)]
-    (str
-     (text-format
-      (get event-types event-type :t.applications.events/unknown)
-      (localize-user (:event/actor-attributes event))
-      (case event-type
-        :application.event/review-requested
-        (str/join ", " (mapv localize-user
-                             (:application/reviewers event)))
+  (let [event-type (:event/type event)
+        event-localization-key (get event-types event-type :t.applications.events/unknown)
+        event-actor (localize-user (:event/actor-attributes event))
+        params (get-event-params event)]
+    (str (text-format-map event-localization-key
+                          (merge {:event-actor event-actor} params)
+                          (apply conj [:event-actor] (sort (keys params))))
+         ;; conditional translations
+         (case event-type
+           :application.event/approved
+           (when-let [end (:entitlement/end event)]
+             (str " " (text-format :t.applications/entitlement-end (localize-utc-date end))))
 
-        :application.event/decision-requested
-        (str/join ", " (mapv localize-user
-                             (:application/deciders event)))
+           :application.event/attachments-redacted
+           (when (seq (:event/attachments event))
+             (str " " (text :t.applications/redacted-attachments-replaced)))
 
-        :application.event/created
-        (:application/external-id event)
-
-        :application.event/external-id-assigned
-        (:application/external-id event)
-
-        (:application.event/member-added
-         :application.event/member-removed)
-        (localize-user (:application/member event))
-
-        :application.event/applicant-changed
-        (localize-user (:application/applicant event))
-
-        (:application.event/member-invited
-         :application.event/member-uninvited)
-        (localize-invitation (:application/member event))
-
-        :application.event/decider-invited
-        (localize-invitation (:application/decider event))
-
-        :application.event/reviewer-invited
-        (localize-invitation (:application/reviewer event))
-
-        :application.event/resources-changed
-        (str/join ", " (mapv #(localized (:catalogue-item/title %))
-                             (:application/resources event)))
-
-        :application.event/attachments-redacted
-        (when (seq (:event/attachments event))
-          (text :t.applications/redacted-attachments-replaced))
-
-        :application.event/voted
-        (when-not (str/blank? (:vote/value event))
-          (text (keyword (str "t" ".applications.voting.votes") (:vote/value event))))
-
-        nil))
-     (case event-type
-       :application.event/approved
-       (when-let [end (:entitlement/end event)]
-         (str " " (text-format :t.applications/entitlement-end (localize-utc-date end))))
-
-       nil))))
+           nil))))
 
 (defn localize-attachment
   "If attachment is redacted, return localized text for redacted attachment.
@@ -323,6 +372,7 @@
    :application.command/approve :t.commands/approve
    :application.command/assign-external-id :t.commands/assign-external-id
    :application.command/change-applicant :t.commands/change-applicant
+   :application.command/change-processing-state :t.commands/change-processing-state
    :application.command/change-resources :t.commands/change-resources
    :application.command/close :t.commands/close
    :application.command/copy-as-new :t.commands/copy-as-new
@@ -352,3 +402,19 @@
                        command
                        (:type command))]
     (text (get localized-commands command-type) :t/unknown)))
+
+(defn- translation-key? [x]
+  (and (keyword? x)
+       (or (str/starts-with? (namespace x) "t.")
+           (= "t" (namespace x)))))
+
+(defn text-label [label-type & args]
+  (let [kw (case label-type
+             :dash :t.label/dash
+             :default :t.label/default
+             :long :t.label/long
+             :optional :t.label/optional
+             :parens :t.label/parens)]
+    (->> args
+         (mapv #(cond-> % (translation-key? %) (text)))
+         (apply text-format kw))))

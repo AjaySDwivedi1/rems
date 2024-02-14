@@ -18,3 +18,13 @@
 (def ^:dynamic ^{:doc "User's preferred language."} *lang*)
 
 (def ^:dynamic ^{:doc "Ongoing HTTP request if any."} *request*)
+
+;; Test data helpers
+
+;; rems.db.test-data-users/+fake-users+
+(def ^:dynamic ^{:doc "Users map for creating test data"} *test-users*)
+
+;; rems.db.test-data-users/+fake-user-data+
+(def ^:dynamic ^{:doc "User attributes map for creating test data"} *test-user-data*)
+
+(def ^:dynamic ^{:doc "Instructs test data functions to print extra details for debugging"} *print-test-invocations*)

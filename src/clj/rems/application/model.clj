@@ -1,8 +1,9 @@
 (ns rems.application.model
-  (:require [clojure.set :as set]
+  (:require [better-cond.core :as b]
+            [clojure.set :as set]
             [clojure.test :refer [deftest is testing]]
             [com.rpl.specter :refer [ALL transform select]]
-            [medley.core :refer [assoc-some dissoc-in distinct-by filter-vals find-first map-vals update-existing update-existing-in]]
+            [medley.core :refer [assoc-some distinct-by filter-vals find-first map-vals update-existing update-existing-in]]
             [rems.application.events :as events]
             [rems.application.master-workflow :as master-workflow]
             [rems.common.application-util :refer [applicant-and-members can-redact-attachment? is-applying-user?]]
@@ -270,10 +271,11 @@
             [:application/votes (:event/actor event)]
             (:vote/value event)))
 
-(defmethod application-base-view :application.event/processing-stage-changed
+(defmethod application-base-view :application.event/processing-state-changed
   [application event]
-  (assoc application
-         :application/processing-stage (:processing-stage/value event)))
+  (assoc-in application
+            [:application/processing-state (:application/state application)]
+            (:processing-state/value event)))
 
 (deftest test-event-type-specific-application-view
   (testing "supports all event types"
@@ -301,7 +303,7 @@
     {:permission :application.command/add-member}
     {:permission :application.command/assign-external-id}
     {:permission :application.command/change-applicant}
-    {:permission :application.command/change-processing-stage}
+    {:permission :application.command/change-processing-state}
     {:permission :application.command/change-resources}
     {:permission :application.command/close}
     {:permission :application.command/copy-as-new}
@@ -337,7 +339,7 @@
     {:permission :application.command/add-member}
     {:permission :application.command/assign-external-id}
     {:permission :application.command/change-applicant}
-    {:permission :application.command/change-processing-stage}
+    {:permission :application.command/change-processing-state}
     {:permission :application.command/change-resources}
     {:permission :application.command/close}
     {:permission :application.command/copy-as-new}
@@ -602,6 +604,7 @@
                         :application.event/member-joined
                         :application.event/member-removed
                         :application.event/member-uninvited
+                        :application.event/processing-state-changed
                         :application.event/rejected
                         :application.event/remarked
                         :application.event/resources-changed
@@ -812,6 +815,23 @@
     (-> application
         (assoc-some-in [:application/workflow :workflow/anonymize-handling] anonymize-handling))))
 
+(defn- enrich-workflow-processing-states [application get-config get-workflow]
+  (b/cond
+    :let [config (get-config)
+          disallow-command #(permissions/blacklist % (permissions/compile-rules [{:permission :application.command/change-processing-state}]))]
+
+    (not (:enable-processing-states config))
+    (disallow-command application)
+
+    :let [workflow-id (get-in application [:application/workflow :workflow/id])
+          workflow (get-workflow workflow-id)
+          states (get-in workflow [:workflow :processing-states])]
+
+    (empty? states)
+    (disallow-command application)
+
+    (assoc-in application [:application/workflow :workflow/processing-states] states)))
+
 (defn enrich-with-injections
   [application {:keys [blacklisted?
                        get-form-template
@@ -832,7 +852,9 @@
       (hide-duos-if-not-enabled get-config)
       enrich-duos ; uses enriched resources
       (enrich-workflow-licenses get-workflow)
+      (enrich-workflow-processing-states get-config get-workflow)
       (update :application/licenses enrich-licenses get-license)
+      ;; TODO: enrich processing state event with public/not-public that is dynamic
       (update :application/events (partial mapv #(enrich-event % get-user get-catalogue-item)))
       (assoc :application/applicant (get-user (get-in application [:application/applicant :userid])))
       (update :application/attachments #(merge-lists-by :attachment/id % (get-attachments-for-application (getx application :application/id))))
@@ -920,14 +942,16 @@
 
 (defn- hide-sensitive-information [application]
   (-> application
-      (dissoc :application/blacklist)
       (update :application/events hide-sensitive-events)
       (update :application/events (partial mapv #(dissoc % :event/public :event/visibility)))
       apply-workflow-anonymization
-      (dissoc-in [:application/workflow :workflow.dynamic/handlers]
-                 [:application/workflow :workflow/voting]
-                 [:application/workflow :workflow/anonymize-handling])
-      (dissoc :application/votes)
+      (update :application/workflow (partial apply dissoc) #{:workflow/anonymize-handling
+                                                             :workflow.dynamic/handlers
+                                                             :workflow/processing-states
+                                                             :workflow/voting})
+      (dissoc :application/blacklist
+              :application/processing-state
+              :application/votes)
       hide-extra-user-attributes))
 
 (defn- hide-invitation-tokens [application]

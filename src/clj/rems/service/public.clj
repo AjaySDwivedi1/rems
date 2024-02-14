@@ -42,7 +42,7 @@
                     :show-attachment-zip-action
                     :show-pdf-action
                     :enable-voting
-                    :enable-processing-stages
+                    :enable-processing-states
                     :tables])
       (update :extra-pages filter-extra-pages)))
 

@@ -8,7 +8,7 @@
             [rems.common.application-util :as application-util]
             [rems.common.util :refer [build-index]]
             [rems.dropdown :as dropdown]
-            [rems.text :refer [text text-format]]))
+            [rems.text :refer [localize-vote text text-format]]))
 
 (def ^:private action-form-id "vote")
 
@@ -47,8 +47,8 @@
      [dropdown/dropdown
       {:id id
        ;; XXX: consider making choices dynamic
-       :items [{:value "accept" :label (text :t.applications.voting.votes/accept)}
-               {:value "reject" :label (text :t.applications.voting.votes/reject)}]
+       :items [{:value "accept" :label (localize-vote "accept")}
+               {:value "reject" :label (localize-vote "reject")}]
        :item-label (comp rc/as-element :label)
        :item-selected? #(= (or vote previous-vote) (:value %))
        :on-change #(on-vote (:value %))}]]))
@@ -66,7 +66,7 @@
    [:<>
     (when previous-vote
       (text-format :t.applications.voting/previously-voted
-                   [:strong (text (keyword (str "t" ".applications.voting.votes") previous-vote))]))
+                   [:strong (localize-vote previous-vote)]))
 
     [vote-field {:previous-vote previous-vote
                  :vote vote
@@ -108,7 +108,7 @@
                   vote-voters (get voters-by-vote vote)]]
         ^{:key vote}
         [:div.form-group.row
-         [:label.col-sm-3.col-form-label (text (keyword (str "t" ".applications.voting.votes") vote))]
+         [:label.col-sm-3.col-form-label (localize-vote vote)]
          [:div.col-sm-9.form-control (goog.string/format "%.2f%% (%s)"
                                                          n-pct
                                                          (->> vote-voters
@@ -122,7 +122,7 @@
                                 (mapv application-util/get-member-name)
                                 (str/join ", "))]
         [:div.form-group.row
-         [:label.col-sm-3.col-form-label (text :t.applications.voting.votes/empty)]
+         [:label.col-sm-3.col-form-label (localize-vote "empty")]
          [:div.col-sm-9.form-control (goog.string/format "%.2f%% (%s)"
                                                          n-pct
                                                          missing-voters)]])]]))

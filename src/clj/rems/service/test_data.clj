@@ -4,64 +4,22 @@
    test and demo data, which create the same data, but with different users."
   (:require [clj-time.core :as time]
             [clojure.string :as str]
-            [clojure.test :refer :all]
+            [clojure.test :refer [deftest is]]
             [clojure.tools.logging :as log]
             [rems.api.schema :as schema]
             [rems.config]
-            [rems.db.api-key :as api-key]
+            [rems.context :as context]
+            [rems.db.api-key]
             [rems.db.core :as db]
-            [rems.db.roles :as roles]
-            [rems.db.test-data-helpers :as test-helpers]
-            [rems.db.test-data-users :refer :all]
-            [rems.db.users :as users]
-            [rems.db.workflow :as workflow]
-            [rems.service.form :as form]
-            [rems.service.organizations :as organizations]
+            [rems.db.roles]
+            [rems.db.test-data-helpers :as test-helpers :refer [getx-test-users getx-test-user-data]]
+            [rems.db.test-data-users :refer [+bot-user-data+ +bot-users+ +demo-user-data+ +demo-users+ +fake-user-data+ +fake-users+ +oidc-user-data+ +oidc-users+]]
+            [rems.db.users]
+            [rems.service.form]
+            [rems.service.organizations]
             [rems.testing-util :refer [with-user]])
   (:import [java.util UUID]
            [java.util.concurrent Executors Future]))
-
-(def +test-api-key+ "42")
-
-;;; generate test data
-
-(defn- create-users-and-roles! [users attrs]
-  (doseq [user (vals users)]
-    (when-let [data (get attrs user)]
-      (test-helpers/create-user! data)))
-  (roles/add-role! (users :owner) :owner)
-  (roles/add-role! (users :reporter) :reporter))
-
-(defn create-test-users-and-roles! []
-  ;; users provided by the fake login
-  (create-users-and-roles! +fake-users+ +fake-user-data+)
-  ;; invalid user for tests
-  (db/add-user! {:user "invalid" :userattrs nil}))
-
-(defn create-bots! []
-  (doseq [attr (vals +bot-user-data+)]
-    (test-helpers/create-user! attr))
-  (roles/add-role! (:expirer-bot +bot-users+) :expirer))
-
-(defn- create-archived-form! [actor]
-  (with-user actor
-    (let [id (test-helpers/create-form! {:actor actor
-                                         :organization {:organization/id "nbn"}
-                                         :form/internal-name "Archived form, should not be seen by applicants"
-                                         :form/external-title {:en "Archived form, should not be seen by applicants"
-                                                               :fi "Archived form, should not be seen by applicants"
-                                                               :sv "Archived form, should not be seen by applicants"}})]
-      (form/set-form-archived! {:id id :archived true}))))
-
-(defn- create-disabled-license! [{:keys [actor organization]}]
-  (let [id (test-helpers/create-license! {:actor actor
-                                          :license/type "link"
-                                          :organization organization
-                                          :license/title {:en "Disabled license"
-                                                          :fi "Käytöstä poistettu lisenssi"}
-                                          :license/link {:en "http://disabled"
-                                                         :fi "http://disabled"}})]
-    (db/set-license-enabled! {:id id :enabled false})))
 
 (def label-field
   {:field/type :label
@@ -235,287 +193,6 @@
          (set (map :field/type all-field-types-example)))
       "a new field has been added to schema but not to this test data"))
 
-(defn create-all-field-types-example-form!
-  "Creates a multilingual form with all supported field types. Returns the form ID."
-  [actor organization internal-name external-title]
-  (test-helpers/create-form! {:actor actor
-                              :organization organization
-                              :form/internal-name internal-name
-                              :form/external-title external-title
-                              :form/fields all-field-types-example}))
-
-(defn- create-workflows! [users]
-  (let [approver1 (users :approver1)
-        approver2 (users :approver2)
-        approver-bot (users :approver-bot)
-        rejecter-bot (users :rejecter-bot)
-        owner (users :owner)
-        organization-owner1 (users :organization-owner1)
-        handlers [approver1 approver2 rejecter-bot]
-        link (test-helpers/create-license! {:actor owner
-                                            :license/type :link
-                                            :organization {:organization/id "nbn"}
-                                            :license/title {:en "CC Attribution 4.0"
-                                                            :fi "CC Nimeä 4.0"
-                                                            :sv "CC Erkännande 4.0"}
-                                            :license/link {:en "https://creativecommons.org/licenses/by/4.0/legalcode"
-                                                           :fi "https://creativecommons.org/licenses/by/4.0/legalcode.fi"
-                                                           :sv "https://creativecommons.org/licenses/by/4.0/legalcode.sv"}})
-        text (test-helpers/create-license! {:actor owner
-                                            :license/type :text
-                                            :organization {:organization/id "nbn"}
-                                            :license/title {:en "General Terms of Use"
-                                                            :fi "Yleiset käyttöehdot"
-                                                            :sv "Allmänna villkor"}
-                                            :license/text {:en (apply str (repeat 10 "License text in English. "))
-                                                           :fi (apply str (repeat 10 "Suomenkielinen lisenssiteksti. "))
-                                                           :sv (apply str (repeat 10 "Licens på svenska. "))}})
-        default (test-helpers/create-workflow! {:actor owner
-                                                :organization {:organization/id "nbn"}
-                                                :title "Default workflow"
-                                                :type :workflow/default
-                                                :handlers handlers
-                                                :licenses [link text]})
-        decider (test-helpers/create-workflow! {:actor owner
-                                                :organization {:organization/id "nbn"}
-                                                :title "Decider workflow"
-                                                :type :workflow/decider
-                                                :handlers handlers
-                                                :licenses [link text]
-                                                :voting {:type :handlers-vote}})
-        master (test-helpers/create-workflow! {:actor owner
-                                               :organization {:organization/id "nbn"}
-                                               :title "Master workflow"
-                                               :type :workflow/master
-                                               :handlers handlers
-                                               :licenses [link text]})
-        auto-approve (test-helpers/create-workflow! {:actor owner
-                                                     :organization {:organization/id "nbn"}
-                                                     :title "Auto-approve workflow"
-                                                     :handlers [approver-bot rejecter-bot]
-                                                     :licenses [link text]})
-        organization-owner (test-helpers/create-workflow! {:actor organization-owner1
-                                                           :organization {:organization/id "organization1"}
-                                                           :title "Owned by organization owner"
-                                                           :type :workflow/default
-                                                           :handlers handlers})
-        _with-form (test-helpers/create-workflow! {:actor owner
-                                                   :organization {:organization/id "nbn"}
-                                                   :title "With workflow form"
-                                                   :type :workflow/default
-                                                   :handlers handlers
-                                                   :licenses [link text]
-                                                   :forms [{:form/id (test-helpers/create-form! {:actor owner
-                                                                                                 :form/internal-name "Workflow form"
-                                                                                                 :form/external-title {:en "Workflow form"
-                                                                                                                       :fi "Työvuon lomake"
-                                                                                                                       :sv "Blankett för arbetsflöde"}
-                                                                                                 :organization {:organization/id "nbn"}
-                                                                                                 :form/fields [description-field]})}]})
-        restricted (test-helpers/create-workflow! {:actor owner
-                                                   :organization {:organization/id "nbn"}
-                                                   :title "Restricted workflow"
-                                                   :type :workflow/default
-                                                   :handlers handlers
-                                                   :licenses [link text]
-                                                   :disable-commands [{:command :application.command/invite-member}
-                                                                      {:command :application.command/close
-                                                                       :when/state [:application.state/returned]
-                                                                       :when/role [:applicant]}]
-                                                   :anonymize-handling true})]
-    {:default default
-     :decider decider
-     :master master
-     :auto-approve auto-approve
-     :organization-owner organization-owner
-     :restricted restricted}))
-
-(defn- create-bona-fide-catalogue-item! [users]
-  (let [owner (:owner users)
-        bot (:bona-fide-bot users)
-        res (test-helpers/create-resource! {:resource-ext-id "bona-fide"
-                                            :organization {:organization/id "default"}
-                                            :actor owner})
-        form (test-helpers/create-form! {:actor owner
-                                         :form/internal-name "Bona Fide form"
-                                         :form/external-title {:en "Form"
-                                                               :fi "Lomake"
-                                                               :sv "Blankett"}
-                                         :organization {:organization/id "default"}
-                                         :form/fields [(assoc email-field :field/title {:fi "Suosittelijan sähköpostiosoite"
-                                                                                        :en "Referer's email address"
-                                                                                        :sv "sv"})]})
-        wf (test-helpers/create-workflow! {:actor owner
-                                           :organization {:organization/id "default"}
-                                           :title "Bona Fide workflow"
-                                           :type :workflow/default
-                                           :handlers [bot]})]
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :organization {:organization/id "default"}
-                                          :title {:en "Apply for Bona Fide researcher status"
-                                                  :fi "Hae Bona Fide tutkija -statusta"
-                                                  :sv "sv"}
-                                          :resource-id res
-                                          :form-id form
-                                          :workflow-id wf})))
-
-(defn- create-disabled-applications! [catid applicant approver]
-  (test-helpers/create-draft! applicant [catid] "draft with disabled item")
-
-  (let [appid1 (test-helpers/create-draft! applicant [catid] "submitted application with disabled item")]
-    (test-helpers/command! {:type :application.command/submit
-                            :application-id appid1
-                            :actor applicant}))
-
-  (let [appid2 (test-helpers/create-draft! applicant [catid] "approved application with disabled item")]
-    (test-helpers/command! {:type :application.command/submit
-                            :application-id appid2
-                            :actor applicant})
-    (test-helpers/command! {:type :application.command/approve
-                            :application-id appid2
-                            :actor approver
-                            :comment "Looking good"})))
-
-(defn- create-applications! [catid catid-restricted users]
-  (let [applicant (users :applicant1)
-        approver (users :approver1)
-        approver2 (users :approver2)
-        reviewer (users :reviewer)
-        decider (users :decider)]
-
-    (test-helpers/create-draft! applicant [catid] "draft application")
-
-    (doseq [n (range 80 100 2)
-            :let [created-at (time/minus (time/now) (time/days n))]]
-      (test-helpers/create-draft! applicant [catid] "forgotten draft" created-at))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "applied")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant}))
-
-    (let [time (time/minus (time/now) (time/days 7))
-          app-id (test-helpers/create-draft! applicant [catid] "old applied" time)]
-      (test-helpers/command! {:time time
-                              :type :application.command/submit
-                              :application-id app-id
-                              :actor applicant}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "approved with comment")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor approver
-                              :reviewers [reviewer]
-                              :comment "please have a look"})
-      (test-helpers/command! {:type :application.command/review
-                              :application-id app-id
-                              :actor reviewer
-                              :comment "looking good"})
-      (test-helpers/command! {:type :application.command/approve
-                              :application-id app-id
-                              :actor approver
-                              :comment "Thank you! Approved!"}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "rejected")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/reject
-                              :application-id app-id
-                              :actor approver
-                              :comment "Never going to happen"}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid-restricted] "returned")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/remark
-                              :application-id app-id
-                              :actor approver
-                              :comment "processing is due now"
-                              :public true})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor approver2
-                              :reviewers [reviewer]
-                              :comment "please have a look"})
-      (test-helpers/command! {:type :application.command/remark
-                              :application-id app-id
-                              :actor reviewer
-                              :comment "application is missing key purpose"
-                              :public true})
-      (test-helpers/command! {:type :application.command/review
-                              :application-id app-id
-                              :actor reviewer
-                              :comment "not looking good in my opinion"})
-      (test-helpers/command! {:type :application.command/request-decision
-                              :application-id app-id
-                              :actor approver2
-                              :comment "please decide"
-                              :deciders [decider]})
-      (test-helpers/command! {:type :application.command/remark
-                              :application-id app-id
-                              :actor decider
-                              :comment "i agree with previous remarker"
-                              :public true})
-      (test-helpers/command! {:type :application.command/decide
-                              :application-id app-id
-                              :actor decider
-                              :decision :rejected
-                              :comment "unacceptable in current state"})
-      (test-helpers/command! {:type :application.command/return
-                              :application-id app-id
-                              :actor approver2
-                              :comment "need more details"}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "approved & closed")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor approver
-                              :reviewers [reviewer]
-                              :comment "please have a look"})
-      (test-helpers/command! {:type :application.command/review
-                              :application-id app-id
-                              :actor reviewer
-                              :comment "looking good"})
-      (test-helpers/command! {:type :application.command/approve
-                              :application-id app-id
-                              :actor approver
-                              :comment "Thank you! Approved!"})
-      (test-helpers/command! {:type :application.command/close
-                              :application-id app-id
-                              :actor approver
-                              :comment "Research project complete, closing."}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "waiting for review")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor approver
-                              :reviewers [reviewer]
-                              :comment ""}))
-
-    (let [app-id (test-helpers/create-draft! applicant [catid] "waiting for decision")]
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-decision
-                              :application-id app-id
-                              :actor approver
-                              :deciders [reviewer]
-                              :comment ""}))
-
-    (->> (time/minus (time/now) (time/days 84))
-         (test-helpers/create-draft! applicant [catid] "long forgotten draft"))))
-
 (defn- range-1
   "Like `clojure.core/range`, but starts from 1 and `end` is inclusive."
   [end]
@@ -544,119 +221,699 @@
        (UUID/randomUUID)))
 
 (defn create-performance-test-data! []
-  (log/info "Creating performance test data")
-  (let [resource-count 1000
-        application-count 3000
-        user-count 1000
-        handlers [(+fake-users+ :approver1)
-                  (+fake-users+ :approver2)]
-        owner (+fake-users+ :owner)
-        _perf (organizations/add-organization! {:organization/id "perf"
-                                                :organization/name {:fi "Suorituskykytestiorganisaatio" :en "Performance Test Organization" :sv "Organisationen för utvärderingsprov"}
-                                                :organization/short-name {:fi "Suorituskyky" :en "Performance" :sv "Uvärderingsprov"}
-                                                :organization/owners [{:userid (+fake-users+ :organization-owner1)}]
-                                                :organization/review-emails []})
-        workflow-id (test-helpers/create-workflow! {:actor owner
+  (binding [context/*test-users* +fake-users+
+            context/*test-user-data* +fake-user-data+]
+    (log/info "Creating performance test data")
+    (let [resource-count 1000
+          application-count 3000
+          user-count 1000
+          users (getx-test-users)
+          user-data (getx-test-user-data)
+          handlers [(:approver1 users) (:approver2 users)]
+          owner (:owner users)
+          _perf (rems.service.organizations/add-organization! {:organization/id "perf"
+                                                               :organization/name {:fi "Suorituskykytestiorganisaatio" :en "Performance Test Organization" :sv "Organisationen för utvärderingsprov"}
+                                                               :organization/short-name {:fi "Suorituskyky" :en "Performance" :sv "Uvärderingsprov"}
+                                                               :organization/owners [{:userid (:organization-owner1 users)}]
+                                                               :organization/review-emails []})
+          workflow-id (test-helpers/create-workflow! {:actor owner
+                                                      :organization {:organization/id "perf"}
+                                                      :title "Performance tests"
+                                                      :handlers handlers})
+          form-id (test-helpers/create-form! {:actor owner
+                                              :organization {:organization/id "perf"}
+                                              :form/internal-name "Performance tests"
+                                              :form/external-title {:en "Performance tests EN"
+                                                                    :fi "Performance tests FI"
+                                                                    :sv "Performance tests SV"}
+                                              :form/fields [(merge description-field {:field/title {:en "Project name"
+                                                                                                    :fi "Projektin nimi"
+                                                                                                    :sv "Projektets namn"}
+                                                                                      :field/placeholder {:en "Project"
+                                                                                                          :fi "Projekti"
+                                                                                                          :sv "Projekt"}})
+                                                            (merge texta-field {:field/title {:en "Project description"
+                                                                                              :fi "Projektin kuvaus"
+                                                                                              :sv "Projektets beskrivning"}
+                                                                                :field/placeholder {:en "The purpose of the project is to..."
+                                                                                                    :fi "Projektin tarkoitus on..."
+                                                                                                    :sv "Det här projekt..."}})]})
+          form (rems.service.form/get-form-template form-id)
+          category {:category/id (test-helpers/create-category! {:actor owner
+                                                                 :category/title {:en "Performance"
+                                                                                  :fi "Suorituskyky"
+                                                                                  :sv "Prestand"}
+                                                                 :category/description {:en "These catalogue items are for performance test."
+                                                                                        :fi "Nämä resurssit ovat suorituskykytestausta varten."
+                                                                                        :sv "Dessa resurser är för prestand."}})}
+          license-id (test-helpers/create-license! {:actor owner
+                                                    :license/type :text
                                                     :organization {:organization/id "perf"}
-                                                    :title "Performance tests"
-                                                    :handlers handlers})
-        form-id (test-helpers/create-form! {:actor owner
-                                            :organization {:organization/id "perf"}
-                                            :form/internal-name "Performance tests"
-                                            :form/external-title {:en "Performance tests EN"
-                                                                  :fi "Performance tests FI"
-                                                                  :sv "Performance tests SV"}
-                                            :form/fields [(merge description-field {:field/title {:en "Project name"
-                                                                                                  :fi "Projektin nimi"
-                                                                                                  :sv "Projektets namn"}
-                                                                                    :field/placeholder {:en "Project"
-                                                                                                        :fi "Projekti"
-                                                                                                        :sv "Projekt"}})
-                                                          (merge texta-field {:field/title {:en "Project description"
-                                                                                            :fi "Projektin kuvaus"
-                                                                                            :sv "Projektets beskrivning"}
-                                                                              :field/placeholder {:en "The purpose of the project is to..."
-                                                                                                  :fi "Projektin tarkoitus on..."
-                                                                                                  :sv "Det här projekt..."}})]})
-        form (form/get-form-template form-id)
-        category {:category/id (test-helpers/create-category! {:actor owner
-                                                               :category/title {:en "Performance"
-                                                                                :fi "Suorituskyky"
-                                                                                :sv "Prestand"}
-                                                               :category/description {:en "These catalogue items are for performance test."
-                                                                                      :fi "Nämä resurssit ovat suorituskykytestausta varten."
-                                                                                      :sv "Dessa resurser är för prestand."}})}
-        license-id (test-helpers/create-license! {:actor owner
-                                                  :license/type :text
-                                                  :organization {:organization/id "perf"}
-                                                  :license/title {:en "Performance License"
-                                                                  :fi "Suorituskykylisenssi"
-                                                                  :sv "Licens för prestand"}
-                                                  :license/text {:en "Be fast."
-                                                                 :fi "Ole nopea."
-                                                                 :sv "Var snabb."}})
-        cat-item-ids (vec (in-parallel
-                           (for [n (range-1 resource-count)]
-                             (fn []
-                               (let [resource-id (test-helpers/create-resource! {:organization {:organization/id "perf"}
-                                                                                 :license-ids [license-id]})]
-                                 (test-helpers/create-catalogue-item! {:actor owner
-                                                                       :title {:en (str "Performance test resource " n)
-                                                                               :fi (str "Suorituskykytestiresurssi " n)
-                                                                               :sv (str "Licens för prestand " n)}
-                                                                       :resource-id resource-id
-                                                                       :form-id form-id
-                                                                       :organization {:organization/id "perf"}
-                                                                       :workflow-id workflow-id
-                                                                       :categories [category]}))))))
-        user-ids (vec (in-parallel
-                       (for [n (range-1 user-count)]
-                         (fn []
-                           (let [user-id (str "perftester" n)]
-                             (users/add-user-raw! user-id {:userid user-id
-                                                           :email (str user-id "@example.com")
-                                                           :name (str "Performance Tester " n)})
-                             user-id)))))]
-    (with-redefs [rems.config/env (assoc rems.config/env :enable-save-compaction false)] ; generate more events without compaction
-      (in-parallel
-       (for [n (range-1 application-count)]
-         (fn []
-           (log/info "Creating performance test application" n "/" application-count)
-           (let [cat-item-id (rand-nth cat-item-ids)
-                 user-id (rand-nth user-ids)
-                 handler (rand-nth handlers)
-                 app-id (test-helpers/create-application! {:catalogue-item-ids [cat-item-id]
-                                                           :actor user-id})
-                 long-answer (random-long-string)]
-             (dotimes [i 20] ; user saves ~ 20 times while writing an application
-               (test-helpers/command! {:type :application.command/save-draft
-                                       :application-id app-id
-                                       :actor user-id
-                                       :field-values [{:form form-id
-                                                       :field (:field/id (first (:form/fields form)))
-                                                       :value (str "Performance test application " (UUID/randomUUID))}
-                                                      {:form form-id
-                                                       :field (:field/id (second (:form/fields form)))
+                                                    :license/title {:en "Performance License"
+                                                                    :fi "Suorituskykylisenssi"
+                                                                    :sv "Licens för prestand"}
+                                                    :license/text {:en "Be fast."
+                                                                   :fi "Ole nopea."
+                                                                   :sv "Var snabb."}})
+          cat-item-ids (vec (in-parallel
+                             (for [n (range-1 resource-count)]
+                               (fn []
+                                 ;; rebinding due to thread
+                                 (binding [context/*test-users* users
+                                           context/*test-user-data* user-data]
+                                   (let [resource-id (test-helpers/create-resource! {:organization {:organization/id "perf"}
+                                                                                     :license-ids [license-id]})]
+                                     (test-helpers/create-catalogue-item! {:actor owner
+                                                                           :title {:en (str "Performance test resource " n)
+                                                                                   :fi (str "Suorituskykytestiresurssi " n)
+                                                                                   :sv (str "Licens för prestand " n)}
+                                                                           :resource-id resource-id
+                                                                           :form-id form-id
+                                                                           :organization {:organization/id "perf"}
+                                                                           :workflow-id workflow-id
+                                                                           :categories [category]})))))))
+          user-ids (vec (in-parallel
+                         (for [n (range-1 user-count)]
+                           (fn []
+                             ;; rebinding due to thread
+                             (binding [context/*test-users* users
+                                       context/*test-user-data* user-data]
+                               (let [user-id (str "perftester" n)]
+                                 (rems.db.users/add-user-raw! user-id {:userid user-id
+                                                                       :email (str user-id "@example.com")
+                                                                       :name (str "Performance Tester " n)})
+                                 user-id))))))]
+      (with-redefs [rems.config/env (assoc rems.config/env :enable-save-compaction false)] ; generate more events without compaction
+        (in-parallel
+         (for [n (range-1 application-count)]
+           (fn []
+             ;; rebinding due to thread
+             (binding [context/*test-users* users
+                       context/*test-user-data* user-data]
+               (log/info "Creating performance test application" n "/" application-count)
+               (let [cat-item-id (rand-nth cat-item-ids)
+                     user-id (rand-nth user-ids)
+                     handler (rand-nth handlers)
+                     app-id (test-helpers/create-application! {:catalogue-item-ids [cat-item-id]
+                                                               :actor user-id})
+                     long-answer (random-long-string)]
+                 (dotimes [i 20] ; user saves ~ 20 times while writing an application
+                   (test-helpers/command! {:type :application.command/save-draft
+                                           :application-id app-id
+                                           :actor user-id
+                                           :field-values [{:form form-id
+                                                           :field (:field/id (first (:form/fields form)))
+                                                           :value (str "Performance test application " (UUID/randomUUID))}
+                                                          {:form form-id
+                                                           :field (:field/id (second (:form/fields form)))
                                                        ;; 1000 words of lorem ipsum samples from a text from www.lipsum.com
                                                        ;; to increase the memory requirements of an application
-                                                       :value (subs long-answer 0 (int (/ (* (inc i) (count long-answer)) (inc i))))}]}))
-             (test-helpers/command! {:type :application.command/accept-licenses
-                                     :application-id app-id
-                                     :actor user-id
-                                     :accepted-licenses [license-id]})
-             (test-helpers/command! {:type :application.command/submit
-                                     :application-id app-id
-                                     :actor user-id})
-             (test-helpers/command! {:type :application.command/approve
-                                     :application-id app-id
-                                     :actor handler
-                                     :comment ""}))))))
-    (log/info "Performance test applications created")))
+                                                           :value (subs long-answer 0 (int (/ (* (inc i) (count long-answer)) (inc i))))}]}))
+                 (test-helpers/command! {:type :application.command/accept-licenses
+                                         :application-id app-id
+                                         :actor user-id
+                                         :accepted-licenses [license-id]})
+                 (test-helpers/command! {:type :application.command/submit
+                                         :application-id app-id
+                                         :actor user-id})
+                 (test-helpers/command! {:type :application.command/approve
+                                         :application-id app-id
+                                         :actor handler
+                                         :comment ""})))))))
+      (log/info "Performance test applications created"))))
 
-(defn- create-items! [users users-data]
-  (let [owner (users :owner)
-        organization-owner1 (users :organization-owner1)
-        ;; Create licenses
+(defn create-organizations! []
+  (let [owner (getx-test-users :owner)
+        organization-owner1 (getx-test-users :organization-owner1)
+        organization-owner2 (getx-test-users :organization-owner2)]
+    {:default (test-helpers/create-organization! {:actor owner})
+     :hus (test-helpers/create-organization! {:actor owner
+                                              :organization/id "hus"
+                                              :organization/name {:fi "Helsingin yliopistollinen sairaala"
+                                                                  :en "Helsinki University Hospital"
+                                                                  :sv "Helsingfors Universitetssjukhus"}
+                                              :organization/short-name {:fi "HUS"
+                                                                        :en "HUS"
+                                                                        :sv "HUS"}
+                                              :organization/owners [{:userid organization-owner1}]
+                                              :organization/review-emails []})
+     :thl (test-helpers/create-organization! {:actor owner
+                                              :organization/id "thl"
+                                              :organization/name {:fi "Terveyden ja hyvinvoinnin laitos"
+                                                                  :en "Finnish institute for health and welfare"
+                                                                  :sv "Institutet för hälsa och välfärd"}
+                                              :organization/short-name {:fi "THL"
+                                                                        :en "THL"
+                                                                        :sv "THL"}
+                                              :organization/owners [{:userid organization-owner2}]
+                                              :organization/review-emails []})
+     :nbn (test-helpers/create-organization! {:actor owner
+                                              :organization/id "nbn"
+                                              :organization/name {:fi "NBN"
+                                                                  :en "NBN"
+                                                                  :sv "NBN"}
+                                              :organization/short-name {:fi "NBN"
+                                                                        :en "NBN"
+                                                                        :sv "NBN"}
+                                              :organization/owners [{:userid organization-owner2}]
+                                              :organization/review-emails []})
+     :abc (test-helpers/create-organization! {:actor owner
+                                              :organization/id "abc"
+                                              :organization/name {:fi "ABC"
+                                                                  :en "ABC"
+                                                                  :sv "ABC"}
+                                              :organization/short-name {:fi "ABC"
+                                                                        :en "ABC"
+                                                                        :sv "ABC"}
+                                              :organization/owners []
+                                              :organization/review-emails [{:name {:fi "ABC Kirjaamo"}
+                                                                            :email "kirjaamo@abc.efg"}]})
+     :csc (test-helpers/create-organization! {:actor owner
+                                              :organization/id "csc"
+                                              :organization/name {:fi "CSC – TIETEEN TIETOTEKNIIKAN KESKUS OY"
+                                                                  :en "CSC – IT CENTER FOR SCIENCE LTD."
+                                                                  :sv "CSC – IT CENTER FOR SCIENCE LTD."}
+                                              :organization/short-name {:fi "CSC"
+                                                                        :en "CSC"
+                                                                        :sv "CSC"}
+                                              :organization/owners []
+                                              :organization/review-emails []})
+     :organization-1 (test-helpers/create-organization! {:actor owner
+                                                         :organization/id "organization1"
+                                                         :organization/name {:fi "Organization 1"
+                                                                             :en "Organization 1"
+                                                                             :sv "Organization 1"}
+                                                         :organization/short-name {:fi "ORG 1"
+                                                                                   :en "ORG 1"
+                                                                                   :sv "ORG 1"}
+                                                         :organization/owners [{:userid organization-owner1}]
+                                                         :organization/review-emails []})
+     :organization-2 (test-helpers/create-organization! {:actor owner
+                                                         :organization/id "organization2"
+                                                         :organization/name {:fi "Organization 2"
+                                                                             :en "Organization 2"
+                                                                             :sv "Organization 2"}
+                                                         :organization/short-name {:fi "ORG 2"
+                                                                                   :en "ORG 2"
+                                                                                   :sv "ORG 2"}
+                                                         :organization/owners [{:userid organization-owner2}]
+                                                         :organization/review-emails []})}))
+
+(defn- create-applications!
+  [{:keys [catalogue-items]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant1)
+        approver (getx-test-users :approver1)
+        reviewer (getx-test-users :reviewer)]
+    (test-helpers/create-draft! applicant [(:default catalogue-items)] "draft application")
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "applied")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant}))
+
+    (let [time (time/minus (time/now) (time/days 7))
+          app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "old applied" time)]
+      (test-helpers/command! {:time time
+                              :type :application.command/submit
+                              :application-id app-id
+                              :actor applicant}))
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "approved with comment")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant})
+      (test-helpers/command! {:type :application.command/request-review
+                              :application-id app-id
+                              :actor approver
+                              :reviewers [reviewer]
+                              :comment "please have a look"})
+      (test-helpers/command! {:type :application.command/review
+                              :application-id app-id
+                              :actor reviewer
+                              :comment "looking good"})
+      (test-helpers/command! {:type :application.command/approve
+                              :application-id app-id
+                              :actor approver
+                              :comment "Thank you! Approved!"}))
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "rejected")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant})
+      (test-helpers/command! {:type :application.command/reject
+                              :application-id app-id
+                              :actor approver
+                              :comment "Never going to happen"}))
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "approved & closed")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant})
+      (test-helpers/command! {:type :application.command/request-review
+                              :application-id app-id
+                              :actor approver
+                              :reviewers [reviewer]
+                              :comment "please have a look"})
+      (test-helpers/command! {:type :application.command/review
+                              :application-id app-id
+                              :actor reviewer
+                              :comment "looking good"})
+      (test-helpers/command! {:type :application.command/approve
+                              :application-id app-id
+                              :actor approver
+                              :comment "Thank you! Approved!"})
+      (test-helpers/command! {:type :application.command/close
+                              :application-id app-id
+                              :actor approver
+                              :comment "Research project complete, closing."}))
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "waiting for review")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant})
+      (test-helpers/command! {:type :application.command/request-review
+                              :application-id app-id
+                              :actor approver
+                              :reviewers [reviewer]
+                              :comment ""}))
+
+    (let [app-id (test-helpers/create-draft! applicant [(:default catalogue-items)] "waiting for decision")]
+      (test-helpers/command! {:type :application.command/submit
+                              :application-id app-id
+                              :actor applicant})
+      (test-helpers/command! {:type :application.command/request-decision
+                              :application-id app-id
+                              :actor approver
+                              :deciders [reviewer]
+                              :comment ""}))))
+
+(defn- create-anonymized-handling-items!
+  [{:keys [categories
+           forms
+           licenses
+           resources]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant1)
+        handler (getx-test-users :approver1)
+        handler-2 (getx-test-users :approver2)
+        reviewer (getx-test-users :reviewer)
+        decider (getx-test-users :decider)
+        owner (getx-test-users :owner)
+        rejecter-bot (getx-test-users :rejecter-bot)
+        restricted-workflow (test-helpers/create-workflow! {:actor owner
+                                                            :organization {:organization/id "nbn"}
+                                                            :title "Restricted workflow"
+                                                            :type :workflow/default
+                                                            :handlers [handler handler-2 rejecter-bot]
+                                                            :licenses [(:workflow-link licenses)
+                                                                       (:workflow-text licenses)]
+                                                            :disable-commands [{:command :application.command/invite-member}
+                                                                               {:command :application.command/close
+                                                                                :when/state [:application.state/returned]
+                                                                                :when/role [:applicant]}]
+                                                            :anonymize-handling true})
+        cat-restricted (test-helpers/create-catalogue-item! {:actor owner
+                                                             :title {:en "Default workflow (restricted)"
+                                                                     :fi "Oletustyövuo (rajoitettu)"
+                                                                     :sv "Standard arbetsflöde (begränsad)"}
+                                                             :infourl {:en "http://www.google.com"
+                                                                       :fi "http://www.google.fi"
+                                                                       :sv "http://www.google.se"}
+                                                             :resource-id (:res1 resources)
+                                                             :form-id (:form forms)
+                                                             :organization {:organization/id "nbn"}
+                                                             :workflow-id restricted-workflow
+                                                             :categories [(:special categories)]})
+        app-id (test-helpers/create-draft! applicant [cat-restricted] "returned")]
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id app-id
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/remark
+                            :application-id app-id
+                            :actor handler
+                            :comment "processing is due now"
+                            :public true})
+    (test-helpers/command! {:type :application.command/request-review
+                            :application-id app-id
+                            :actor handler-2
+                            :reviewers [reviewer]
+                            :comment "please have a look"})
+    (test-helpers/command! {:type :application.command/remark
+                            :application-id app-id
+                            :actor reviewer
+                            :comment "application is missing key purpose"
+                            :public true})
+    (test-helpers/command! {:type :application.command/review
+                            :application-id app-id
+                            :actor reviewer
+                            :comment "not looking good in my opinion"})
+    (test-helpers/command! {:type :application.command/request-decision
+                            :application-id app-id
+                            :actor handler-2
+                            :comment "please decide"
+                            :deciders [decider]})
+    (test-helpers/command! {:type :application.command/remark
+                            :application-id app-id
+                            :actor decider
+                            :comment "i agree with previous remarker"
+                            :public true})
+    (test-helpers/command! {:type :application.command/decide
+                            :application-id app-id
+                            :actor decider
+                            :decision :rejected
+                            :comment "unacceptable in current state"})
+    (test-helpers/command! {:type :application.command/return
+                            :application-id app-id
+                            :actor handler-2
+                            :comment "need more details"})))
+
+(defn- create-expiring-draft-applications!
+  [{:keys [catalogue-items]
+    :as shared-test-data}]
+  (doseq [n (range 80 100 2)
+          :let [created-at (time/minus (time/now) (time/days n))]]
+    (test-helpers/create-draft! (getx-test-users :applicant1)
+                                [(:default catalogue-items)]
+                                "forgotten draft"
+                                created-at)))
+
+(defn- create-bona-fide-items! []
+  (let [owner (getx-test-users :owner)
+        bot (getx-test-users :bona-fide-bot)
+        res (test-helpers/create-resource! {:resource-ext-id "bona-fide"
+                                            :organization {:organization/id "default"}
+                                            :actor owner})
+        form (test-helpers/create-form! {:actor owner
+                                         :form/internal-name "Bona Fide form"
+                                         :form/external-title {:en "Form"
+                                                               :fi "Lomake"
+                                                               :sv "Blankett"}
+                                         :organization {:organization/id "default"}
+                                         :form/fields [(assoc email-field :field/title {:fi "Suosittelijan sähköpostiosoite"
+                                                                                        :en "Referer's email address"
+                                                                                        :sv "sv"})]})
+        wf (test-helpers/create-workflow! {:actor owner
+                                           :organization {:organization/id "default"}
+                                           :title "Bona Fide workflow"
+                                           :type :workflow/default
+                                           :handlers [bot]})]
+    (test-helpers/create-catalogue-item! {:actor owner
+                                          :organization {:organization/id "default"}
+                                          :title {:en "Apply for Bona Fide researcher status"
+                                                  :fi "Hae Bona Fide tutkija -statusta"
+                                                  :sv "sv"}
+                                          :resource-id res
+                                          :form-id form
+                                          :workflow-id wf})))
+
+(defn- create-disabled-applications!
+  [{:keys [categories
+           forms
+           resources
+           workflows]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant2)
+        handler (getx-test-users :approver1)
+        owner (getx-test-users :owner)
+        cat-default-disabled (test-helpers/create-catalogue-item! {:actor owner
+                                                                   :title {:en "Default workflow (disabled)"
+                                                                           :fi "Oletustyövuo (pois käytöstä)"
+                                                                           :sv "Standard arbetsflöde (avaktiverat)"}
+                                                                   :resource-id (:res1 resources)
+                                                                   :form-id (:form forms)
+                                                                   :organization {:organization/id "nbn"}
+                                                                   :workflow-id (:default workflows)
+                                                                   :categories [(:ordinary categories)]})
+        _draft-app (test-helpers/create-draft! applicant [cat-default-disabled] "draft with disabled item")
+        submitted-app (test-helpers/create-draft! applicant [cat-default-disabled] "submitted application with disabled item")
+        approved-app (test-helpers/create-draft! applicant [cat-default-disabled] "approved application with disabled item")]
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id submitted-app
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id approved-app
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/approve
+                            :application-id approved-app
+                            :actor handler
+                            :comment "Looking good"})
+    (db/set-catalogue-item-enabled! {:id cat-default-disabled
+                                     :enabled false})))
+
+(defn- create-expired-catalogue-item!
+  [{:keys [categories
+           resources
+           workflows]
+    :as shared-test-data}]
+  (let [owner (getx-test-users :owner)
+        default-expired (test-helpers/create-catalogue-item! {:actor owner
+                                                              :title {:en "Default workflow (expired)"
+                                                                      :fi "Oletustyövuo (vanhentunut)"
+                                                                      :sv "Standard arbetsflöde (utgånget)"}
+                                                              :resource-id (:res1 resources)
+                                                              :form-id (:form resources)
+                                                              :organization {:organization/id "nbn"}
+                                                              :workflow-id (:default workflows)
+                                                              :categories [(:ordinary categories)]})]
+    (db/set-catalogue-item-endt! {:id default-expired :end (time/now)})))
+
+(defn- create-private-form-items!
+  "Demo catalo 
+   - forms with public and private fields, and catalogue items and applications using them"
+  [{:keys [categories
+           forms
+           resources
+           workflows]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant1)
+        handler (getx-test-users :approver2)
+        reviewer (getx-test-users :reviewer)
+        owner (getx-test-users :owner)
+        catid-1 (test-helpers/create-catalogue-item! {:actor owner
+                                                      :title {:en "Default workflow with public and private fields"
+                                                              :fi "Testityövuo julkisilla ja yksityisillä lomakekentillä"
+                                                              :sv "Standard arbetsflöde med publika och privata textfält"}
+                                                      :resource-id (:res1 resources)
+                                                      :form-id (:form-with-public-and-private-fields forms)
+                                                      :organization {:organization/id "nbn"}
+                                                      :workflow-id (:default workflows)
+                                                      :categories [(:ordinary categories)]})
+        catid-2 (test-helpers/create-catalogue-item! {:actor owner
+                                                      :title {:en "Default workflow with private form"
+                                                              :fi "Oletustyövuo yksityisellä lomakkeella"
+                                                              :sv "Standard arbetsflöde med privat blankett"}
+                                                      :resource-id (:res2 resources)
+                                                      :form-id (:form-private-nbn forms)
+                                                      :organization {:organization/id "nbn"}
+                                                      :workflow-id (:default workflows)
+                                                      :categories [(:ordinary categories)]})
+        app-id (test-helpers/create-draft! applicant [catid-1 catid-2] "two-form draft application")]
+    (test-helpers/invite-and-accept-member! {:actor applicant
+                                             :application-id app-id
+                                             :member (getx-test-user-data :applicant2)})
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id app-id
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/request-review
+                            :application-id app-id
+                            :actor handler
+                            :reviewers [reviewer]
+                            :comment "please have a look"})))
+
+(defn- create-duo-items!
+  "Create resources, catalogue items and example application for demoing DUO"
+  [{:keys [categories
+           forms
+           workflows]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant1)
+        handler (getx-test-users :approver2)
+        reviewer (getx-test-users :reviewer)
+        owner (getx-test-users :owner)
+        duo-resource-1 (test-helpers/create-resource!
+                        {:resource-ext-id "Eyelid melanoma samples"
+                         :organization {:organization/id "nbn"}
+                         :actor owner
+                         :resource/duo {:duo/codes [{:id "DUO:0000007"
+                                                     :restrictions [{:type :mondo
+                                                                     :values [{:id "MONDO:0000928"}]}]}
+                                                    {:id "DUO:0000015"}
+                                                    {:id "DUO:0000019"}
+                                                    {:id "DUO:0000027"
+                                                     :restrictions [{:type :project
+                                                                     :values [{:value "project name here"}]}]
+                                                     :more-info {:en "List of approved projects can be found at http://www.google.fi"}}]}})
+        duo-resource-2 (test-helpers/create-resource!
+                        {:resource-ext-id "Spinal cord melanoma samples"
+                         :organization {:organization/id "nbn"}
+                         :actor owner
+                         :resource/duo {:duo/codes [{:id "DUO:0000007"
+                                                     :restrictions [{:type :mondo
+                                                                     :values [{:id "MONDO:0001893"}]}]}
+                                                    {:id "DUO:0000019"}
+                                                    {:id "DUO:0000027"
+                                                     :restrictions [{:type :project
+                                                                     :values [{:value "project name here"}]}]
+                                                     :more-info {:en "This DUO code is optional but recommended"}}]}})
+        cat-id (test-helpers/create-catalogue-item! {:actor owner
+                                                     :title {:en "Apply for eyelid melanoma dataset (EN)"
+                                                             :fi "Apply for eyelid melanoma dataset (FI)"
+                                                             :sv "Apply for eyelid melanoma dataset (SV)"}
+                                                     :resource-id duo-resource-1
+                                                     :form-id (:form forms)
+                                                     :organization {:organization/id "nbn"}
+                                                     :workflow-id (:default workflows)
+                                                     :categories [(:special categories)]})
+        cat-id-2 (test-helpers/create-catalogue-item! {:actor owner
+                                                       :title {:en "Apply for spinal cord melanoma dataset (EN)"
+                                                               :fi "Apply for spinal cord melanoma dataset (FI)"
+                                                               :sv "Apply for spinal cord melanoma dataset (SV)"}
+                                                       :resource-id duo-resource-2
+                                                       :form-id (:form forms)
+                                                       :organization {:organization/id "nbn"}
+                                                       :workflow-id (:default workflows)
+                                                       :categories [(:special categories)]})
+        app-id (test-helpers/create-draft! applicant [cat-id-2] "draft application with DUO codes")
+        app-id-2 (test-helpers/create-draft! applicant [cat-id] "application with DUO codes")]
+    (test-helpers/command! {:type :application.command/save-draft
+                            :application-id app-id
+                            :actor applicant
+                            :field-values []
+                            :duo-codes [{:id "DUO:0000007" :restrictions [{:type :mondo :values [{:id "MONDO:0000928"}]}]}]})
+    (test-helpers/command! {:type :application.command/save-draft
+                            :application-id app-id-2
+                            :actor applicant
+                            :field-values []
+                            :duo-codes [{:id "DUO:0000007" :restrictions [{:type :mondo :values [{:id "MONDO:0000928"}]}]}
+                                        {:id "DUO:0000015"}
+                                        {:id "DUO:0000019"}
+                                        {:id "DUO:0000027" :restrictions [{:type :project :values [{:value "my project"}]}]}]})
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id app-id-2
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/request-review
+                            :application-id app-id-2
+                            :actor handler
+                            :reviewers [reviewer]
+                            :comment "please have a look"})))
+
+(defn create-attachment-redaction-items!
+  "TODO:
+   - create application to demo attachment redaction feature"
+  [{:keys [categories
+           workflows]
+    :as shared-test-data}]
+  (let [applicant (getx-test-users :applicant1)
+        decider (getx-test-users :decider)
+        handler (getx-test-users :approver2) ; "handler"
+        handler2 (getx-test-users :approver1) ; "developer"
+        reviewer (getx-test-users :reviewer)
+        owner (getx-test-users :owner)
+        form-id (test-helpers/create-form! {:actor owner
+                                            :organization {:organization/id "nbn"}
+                                            :form/internal-name "Redaction test form"
+                                            :form/external-title {:en "Form"
+                                                                  :fi "Lomake"
+                                                                  :sv "Blankett"}
+                                            :form/fields [{:field/type :description
+                                                           :field/title {:en "Application title field"
+                                                                         :fi "Hakemuksen otsikko -kenttä"
+                                                                         :sv "Ansökningens rubrikfält"}
+                                                           :field/optional false}
+                                                          {:field/type :attachment
+                                                           :field/title {:en "Attachment"
+                                                                         :fi "Liitetiedosto"
+                                                                         :sv "Bilaga"}
+                                                           :field/optional false}]})
+        resource-id (test-helpers/create-resource! {:resource-ext-id "Attachment redaction test"
+                                                    :organization {:organization/id "nbn"}
+                                                    :actor owner})
+        cat-id (test-helpers/create-catalogue-item! {:actor owner
+                                                     :title {:en "Complicated data request (EN)"
+                                                             :fi "Complicated data request (FI)"
+                                                             :sv "Complicated data request (SV)"}
+                                                     :resource-id resource-id
+                                                     :form-id form-id
+                                                     :organization {:organization/id "nbn"}
+                                                     :workflow-id (:decider workflows)
+                                                     :categories [(:special categories)]})
+        app-id (test-helpers/create-draft! applicant [cat-id] "redacted attachments")]
+    (test-helpers/invite-and-accept-member! {:actor applicant
+                                             :application-id app-id
+                                             :member (getx-test-user-data :applicant2)})
+    (test-helpers/fill-form! {:application-id app-id
+                              :actor applicant
+                              :field-value "complicated application with lots of attachments and five special characters \"åöâīē\""
+                              :attachment (test-helpers/create-attachment! {:actor applicant
+                                                                            :application-id app-id
+                                                                            :filename "applicant_attachment.pdf"})})
+    ;; (delete-orphan-attachments-on-submit) process manager removes all dangling attachments,
+    ;; so we submit application first before creating more attachments
+    (test-helpers/command! {:type :application.command/submit
+                            :application-id app-id
+                            :actor applicant})
+    (test-helpers/command! {:type :application.command/request-review
+                            :application-id app-id
+                            :actor handler
+                            :reviewers [reviewer]
+                            :comment "please have a look. see attachment for details"
+                            :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
+                                                                                            :application-id app-id
+                                                                                            :filename (str "handler_" (random-long-string 5) ".pdf")})}]})
+    (test-helpers/command! {:type :application.command/review
+                            :application-id app-id
+                            :actor reviewer
+                            :comment "here are my thoughts. see attachments for details"
+                            :attachments [{:attachment/id (test-helpers/create-attachment! {:actor reviewer
+                                                                                            :application-id app-id
+                                                                                            :filename "reviewer_attachment.pdf"})}]})
+    (let [handler2-attachments (vec (for [att ["process_document_one.pdf" "process_document_two.pdf" "process_document_three.pdf"]]
+                                      {:attachment/id (test-helpers/create-attachment! {:actor handler2
+                                                                                        :application-id app-id
+                                                                                        :filename att})}))]
+      (test-helpers/command! {:type :application.command/remark
+                              :application-id app-id
+                              :actor handler2
+                              :comment "see the attached process documents"
+                              :public true
+                              :attachments handler2-attachments})
+      (test-helpers/command! {:type :application.command/request-decision
+                              :application-id app-id
+                              :actor handler
+                              :comment "please decide, here are my final notes"
+                              :deciders [decider]
+                              :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
+                                                                                              :application-id app-id
+                                                                                              :filename "handler_attachment.pdf"})}]})
+      (test-helpers/command! {:type :application.command/remark
+                              :application-id app-id
+                              :actor decider
+                              :comment "thank you, i will make my decision soon"
+                              :public false
+                              :attachments [{:attachment/id (test-helpers/create-attachment! {:actor decider
+                                                                                              :application-id app-id
+                                                                                              :filename "decider_attachment.pdf"})}]})
+      (test-helpers/command! {:type :application.command/redact-attachments
+                              :application-id app-id
+                              :actor handler
+                              :comment "updated the process documents to latest version"
+                              :public true
+                              :redacted-attachments (vec (rest handler2-attachments))
+                              :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
+                                                                                              :application-id app-id
+                                                                                              :filename "process_document_two.pdf"})}
+                                            {:attachment/id (test-helpers/create-attachment! {:actor handler
+                                                                                              :application-id app-id
+                                                                                              :filename "process_document_three.pdf"})}]}))))
+
+(defn- create-items! []
+  (let [approver1 (getx-test-users :approver1)
+        approver2 (getx-test-users :approver2)
+        approver-bot (getx-test-users :approver-bot)
+        rejecter-bot (getx-test-users :rejecter-bot)
+        owner (getx-test-users :owner)
+        organization-owner1 (getx-test-users :organization-owner1)
         license1 (test-helpers/create-license! {:actor owner
                                                 :license/type :link
                                                 :organization {:organization/id "nbn"}
@@ -693,13 +950,36 @@
                                                                   :license/link {:en "https://www.apache.org/licenses/LICENSE-2.0"
                                                                                  :fi "https://www.apache.org/licenses/LICENSE-2.0"
                                                                                  :sv "https://www.apache.org/licenses/LICENSE-2.0"}})
-
-        _ (create-disabled-license! {:actor owner
-                                     :organization {:organization/id "nbn"}})
         attachment-license (test-helpers/create-attachment-license! {:actor owner
                                                                      :organization {:organization/id "nbn"}})
+        disabled-license (-> (test-helpers/create-license! {:actor owner
+                                                            :license/type "link"
+                                                            :organization {:organization/id "nbn"}
+                                                            :license/title {:en "Disabled license"
+                                                                            :fi "Käytöstä poistettu lisenssi"}
+                                                            :license/link {:en "http://disabled"
+                                                                           :fi "http://disabled"}})
+                             (as-> id (do (db/set-license-enabled! {:id id :enabled false})
+                                          id)))
+        workflow-link-license (test-helpers/create-license! {:actor owner
+                                                             :license/type :link
+                                                             :organization {:organization/id "nbn"}
+                                                             :license/title {:en "CC Attribution 4.0"
+                                                                             :fi "CC Nimeä 4.0"
+                                                                             :sv "CC Erkännande 4.0"}
+                                                             :license/link {:en "https://creativecommons.org/licenses/by/4.0/legalcode"
+                                                                            :fi "https://creativecommons.org/licenses/by/4.0/legalcode.fi"
+                                                                            :sv "https://creativecommons.org/licenses/by/4.0/legalcode.sv"}})
+        workflow-text-license (test-helpers/create-license! {:actor owner
+                                                             :license/type :text
+                                                             :organization {:organization/id "nbn"}
+                                                             :license/title {:en "General Terms of Use"
+                                                                             :fi "Yleiset käyttöehdot"
+                                                                             :sv "Allmänna villkor"}
+                                                             :license/text {:en (apply str (repeat 10 "License text in English. "))
+                                                                            :fi (apply str (repeat 10 "Suomenkielinen lisenssiteksti. "))
+                                                                            :sv (apply str (repeat 10 "Licens på svenska. "))}})
 
-        ;; Create resources
         res1 (test-helpers/create-resource! {:resource-ext-id "urn:nbn:fi:lb-201403262"
                                              :organization {:organization/id "nbn"}
                                              :actor owner})
@@ -711,7 +991,6 @@
                                              :organization {:organization/id "hus"}
                                              :actor owner
                                              :license-ids [license1 extra-license attachment-license]})
-
         res-organization-owner (test-helpers/create-resource! {:resource-ext-id "Owned by organization owner"
                                                                :organization {:organization/id "organization1"}
                                                                :actor organization-owner1
@@ -720,44 +999,95 @@
                                                                :organization {:organization/id "nbn"}
                                                                :actor owner
                                                                :license-ids [extra-license attachment-license]})
-        _res-duplicate-resource-name1 (test-helpers/create-resource! {:resource-ext-id "duplicate resource name"
-                                                                      :organization {:organization/id "hus"}
-                                                                      :actor owner
-                                                                      :license-ids [license1 extra-license attachment-license]})
-        _res-duplicate-resource-name2 (test-helpers/create-resource! {:resource-ext-id "duplicate resource name"
-                                                                      :organization {:organization/id "hus"}
-                                                                      :actor owner
-                                                                      :license-ids [license2 extra-license attachment-license]})
-        _res-duplicate-resource-name-with-long-name1 (test-helpers/create-resource! {:resource-ext-id "urn:nbn:fi:lb-201403263443773465837568375683683756"
-                                                                                     :organization {:organization/id "hus"}
-                                                                                     :actor owner
-                                                                                     :license-ids [license1 extra-license attachment-license]})
-        _res-duplicate-resource-name-with-long-name2 (test-helpers/create-resource! {:resource-ext-id "urn:nbn:fi:lb-201403263443773465837568375683683756"
-                                                                                     :organization {:organization/id "hus"}
-                                                                                     :actor owner
-                                                                                     :license-ids [license2 extra-license attachment-license]})
+        res-duplicate-resource-name1 (test-helpers/create-resource! {:resource-ext-id "duplicate resource name"
+                                                                     :organization {:organization/id "hus"}
+                                                                     :actor owner
+                                                                     :license-ids [license1 extra-license attachment-license]})
+        res-duplicate-resource-name2 (test-helpers/create-resource! {:resource-ext-id "duplicate resource name"
+                                                                     :organization {:organization/id "hus"}
+                                                                     :actor owner
+                                                                     :license-ids [license2 extra-license attachment-license]})
+        res-duplicate-resource-name-with-long-name1 (test-helpers/create-resource! {:resource-ext-id "urn:nbn:fi:lb-201403263443773465837568375683683756"
+                                                                                    :organization {:organization/id "hus"}
+                                                                                    :actor owner
+                                                                                    :license-ids [license1 extra-license attachment-license]})
+        res-duplicate-resource-name-with-long-name2 (test-helpers/create-resource! {:resource-ext-id "urn:nbn:fi:lb-201403263443773465837568375683683756"
+                                                                                    :organization {:organization/id "hus"}
+                                                                                    :actor owner
+                                                                                    :license-ids [license2 extra-license attachment-license]})
 
-        workflows (create-workflows! (merge users +bot-users+))
-        _ (workflow/edit-workflow! {:id (:organization-owner workflows)
-                                    :licenses [license-organization-owner]})
+        default-workflow (test-helpers/create-workflow! {:actor owner
+                                                         :organization {:organization/id "nbn"}
+                                                         :title "Default workflow"
+                                                         :type :workflow/default
+                                                         :handlers [approver1 approver2 rejecter-bot]
+                                                         :licenses [workflow-link-license workflow-text-license]})
+        decider-workflow (test-helpers/create-workflow! {:actor owner
+                                                         :organization {:organization/id "nbn"}
+                                                         :title "Decider workflow"
+                                                         :type :workflow/decider
+                                                         :handlers [approver1 approver2 rejecter-bot]
+                                                         :licenses [workflow-link-license workflow-text-license]
+                                                         :voting {:type :handlers-vote}
+                                                         :processing-states [{:title {:en "In voting"
+                                                                                      :fi "Äänestyksessä"
+                                                                                      :sv "I omröstningen"}
+                                                                              :value "in voting"}
+                                                                             {:title {:en "Preliminarily approved"
+                                                                                      :fi "Alustavasti hyväksytty"
+                                                                                      :sv "Preliminärt godkänd"}
+                                                                              :value "preliminarily approved"}]})
+        master-workflow (test-helpers/create-workflow! {:actor owner
+                                                        :organization {:organization/id "nbn"}
+                                                        :title "Master workflow"
+                                                        :type :workflow/master
+                                                        :handlers [approver1 approver2 rejecter-bot]
+                                                        :licenses [workflow-link-license workflow-text-license]})
+        auto-approve-workflow (test-helpers/create-workflow! {:actor owner
+                                                              :organization {:organization/id "nbn"}
+                                                              :title "Auto-approve workflow"
+                                                              :type :workflow/master
+                                                              :handlers [approver-bot rejecter-bot]
+                                                              :licenses [workflow-link-license workflow-text-license]})
+        organization-owner-workflow (test-helpers/create-workflow! {:actor organization-owner1
+                                                                    :organization {:organization/id "organization1"}
+                                                                    :title "Owned by organization owner"
+                                                                    :type :workflow/default
+                                                                    :handlers [approver1 approver2 rejecter-bot]
+                                                                    :licenses [license-organization-owner]})
+        with-form-workflow (test-helpers/create-workflow! {:actor owner
+                                                           :organization {:organization/id "nbn"}
+                                                           :title "With workflow form"
+                                                           :type :workflow/default
+                                                           :handlers [approver1 approver2 rejecter-bot]
+                                                           :licenses [workflow-link-license workflow-text-license]
+                                                           :forms [{:form/id (test-helpers/create-form! {:actor owner
+                                                                                                         :form/internal-name "Workflow form"
+                                                                                                         :form/external-title {:en "Workflow form"
+                                                                                                                               :fi "Työvuon lomake"
+                                                                                                                               :sv "Blankett för arbetsflöde"}
+                                                                                                         :organization {:organization/id "nbn"}
+                                                                                                         :form/fields [description-field]})}]})
 
-        form (create-all-field-types-example-form! owner {:organization/id "nbn"} "Example form with all field types" {:en "Example form with all field types"
-                                                                                                                       :fi "Esimerkkilomake kaikin kenttätyypein"
-                                                                                                                       :sv "Exempelblankett med alla fälttyper"})
-
-        form-with-public-and-private-fields (test-helpers/create-form! {:actor owner
-                                                                        :organization {:organization/id "nbn"}
-                                                                        :form/internal-name "Public and private fields form"
-                                                                        :form/external-title {:en "Form"
-                                                                                              :fi "Lomake"
-                                                                                              :sv "Blankett"}
-                                                                        :form/fields [(assoc text-field :field/max-length 100)
-                                                                                      (merge text-field {:field/title {:en "Private text field"
-                                                                                                                       :fi "Yksityinen tekstikenttä"
-                                                                                                                       :sv "Privat textfält"}
-                                                                                                         :field/max-length 100
-                                                                                                         :field/privacy :private})]})
-
+        form (test-helpers/create-form! {:actor owner
+                                         :organization {:organization/id "nbn"}
+                                         :form/internal-name "Example form with all field types"
+                                         :form/external-title {:en "Example form with all field types"
+                                                               :fi "Esimerkkilomake kaikin kenttätyypein"
+                                                               :sv "Exempelblankett med alla fälttyper"}
+                                         :form/fields all-field-types-example})
+        form-public-and-private-fields (test-helpers/create-form! {:actor owner
+                                                                   :organization {:organization/id "nbn"}
+                                                                   :form/internal-name "Public and private fields form"
+                                                                   :form/external-title {:en "Form"
+                                                                                         :fi "Lomake"
+                                                                                         :sv "Blankett"}
+                                                                   :form/fields [(assoc text-field :field/max-length 100)
+                                                                                 (merge text-field {:field/title {:en "Private text field"
+                                                                                                                  :fi "Yksityinen tekstikenttä"
+                                                                                                                  :sv "Privat textfält"}
+                                                                                                    :field/max-length 100
+                                                                                                    :field/privacy :private})]})
         form-private-nbn (test-helpers/create-form! {:actor owner
                                                      :organization {:organization/id "nbn"}
                                                      :form/internal-name "Simple form"
@@ -766,7 +1096,6 @@
                                                                            :sv "Blankett"}
                                                      :form/fields [(merge text-field {:field/max-length 100
                                                                                       :field/privacy :private})]})
-
         form-private-thl (test-helpers/create-form! {:actor owner
                                                      :organization {:organization/id "thl"}
                                                      :form/internal-name "Simple form"
@@ -783,14 +1112,23 @@
                                                                            :sv "Blankett"}
                                                      :form/fields [(merge text-field {:field/max-length 100
                                                                                       :field/privacy :private})]})
-        form-organization-owner (create-all-field-types-example-form! organization-owner1
-                                                                      {:organization/id "organization1"}
-                                                                      "Owned by organization owner"
-                                                                      {:en "Owned by organization owner"
-                                                                       :fi "Omistaja organization owner"
-                                                                       :sv "Ägare organization owner"})
+        form-organization-owner (test-helpers/create-form! {:actor organization-owner1
+                                                            :organization {:organization/id "organization1"}
+                                                            :form/internal-name "Owned by organization owner"
+                                                            :form/external-title {:en "Owned by organization owner"
+                                                                                  :fi "Omistaja organization owner"
+                                                                                  :sv "Ägare organization owner"}
+                                                            :form/fields all-field-types-example})
+        form-archived (-> (test-helpers/create-form! {:actor owner
+                                                      :organization {:organization/id "nbn"}
+                                                      :form/internal-name "Archived form, should not be seen by applicants"
+                                                      :form/external-title {:en "Archived form, should not be seen by applicants"
+                                                                            :fi "Archived form, should not be seen by applicants"
+                                                                            :sv "Archived form, should not be seen by applicants"}})
+                          (as-> id (do (with-user owner
+                                         (rems.service.form/set-form-archived! {:id id :archived true}))
+                                       id)))
 
-        ;; Create categories
         ordinary-category {:category/id (test-helpers/create-category! {:actor owner
                                                                         :category/title {:en "Ordinary"
                                                                                          :fi "Tavalliset"
@@ -809,427 +1147,202 @@
                                                                        :category/description {:en "Special catalogue items for demonstration purposes."
                                                                                               :fi "Erikoiset resurssit demoja varten."
                                                                                               :sv "Särskilda katalogposter för demonstration."}
-                                                                       :category/children [technical-category]})}]
-    (create-archived-form! owner)
+                                                                       :category/children [technical-category]})}
 
-    ;; Create catalogue items
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :title {:en "Master workflow"
-                                                  :fi "Master-työvuo"
-                                                  :sv "Master-arbetsflöde"}
-                                          :infourl {:en "http://www.google.com"
-                                                    :fi "http://www.google.fi"
-                                                    :sv "http://www.google.se"}
-                                          :resource-id res1
-                                          :form-id form
-                                          :organization {:organization/id "nbn"}
-                                          :workflow-id (:master workflows)
-                                          :categories [technical-category]})
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :title {:en "Decider workflow"
-                                                  :fi "Päättäjätyövuo"
-                                                  :sv "Arbetsflöde för beslutsfattande"}
-                                          :infourl {:en "http://www.google.com"
-                                                    :fi "http://www.google.fi"
-                                                    :sv "http://www.google.se"}
-                                          :resource-id res1
-                                          :form-id form
-                                          :organization {:organization/id "nbn"}
-                                          :workflow-id (:decider workflows)
-                                          :categories [special-category]})
-    (let [cat {:actor owner
-               :title {:en "Default workflow"
-                       :fi "Oletustyövuo"
-                       :sv "Standard arbetsflöde"}
-               :infourl {:en "http://www.google.com"
-                         :fi "http://www.google.fi"
-                         :sv "http://www.google.se"}
-               :resource-id res1
-               :form-id form
-               :organization {:organization/id "nbn"}
-               :workflow-id (:default workflows)
-               :categories [ordinary-category]}
-          catid (test-helpers/create-catalogue-item! cat)
-          catid-restricted (test-helpers/create-catalogue-item!
-                            (assoc cat
-                                   :workflow-id (:restricted workflows)
-                                   :title {:en "Default workflow (restricted)"
-                                           :fi "Oletustyövuo (rajoitettu)"
-                                           :sv "Standard arbetsflöde (begränsad)"}))]
-      (create-applications! catid catid-restricted users))
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :title {:en "Default workflow 2"
-                                                  :fi "Oletustyövuo 2"
-                                                  :sv "Standard arbetsflöde 2"}
-                                          :resource-id res2
-                                          :form-id form-private-thl
-                                          :organization {:organization/id "csc"}
-                                          :workflow-id (:default workflows)
-                                          :categories [ordinary-category]})
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :title {:en "Default workflow 3"
-                                                  :fi "Oletustyövuo 3"
-                                                  :sv "Standard arbetsflöde 3"}
-                                          :resource-id res3
-                                          :form-id form-private-hus
-                                          :organization {:organization/id "hus"}
-                                          :workflow-id (:default workflows)
-                                          :categories [ordinary-category]})
-    (test-helpers/create-catalogue-item! {:actor owner
-                                          :title {:en "Default workflow with extra license"
-                                                  :fi "Oletustyövuo ylimääräisellä lisenssillä"
-                                                  :sv "Arbetsflöde med extra licens"}
-                                          :resource-id res-with-extra-license
-                                          :form-id form
-                                          :organization {:organization/id "nbn"}
-                                          :workflow-id (:default workflows)
-                                          :categories [ordinary-category]})
-    (test-helpers/create-catalogue-item! {:title {:en "Auto-approve workflow"
-                                                  :fi "Työvuo automaattisella hyväksynnällä"
-                                                  :sv "Arbetsflöde med automatisk godkänning"}
-                                          :infourl {:en "http://www.google.com"
-                                                    :fi "http://www.google.fi"
-                                                    :sv "http://www.google.se"}
-                                          :resource-id res1
-                                          :form-id form
-                                          :organization {:organization/id "nbn"}
-                                          :workflow-id (:auto-approve workflows)
-                                          :categories [special-category]})
-    (create-bona-fide-catalogue-item! (merge users +bot-users+))
-    (let [default-disabled (test-helpers/create-catalogue-item! {:actor owner
-                                                                 :title {:en "Default workflow (disabled)"
-                                                                         :fi "Oletustyövuo (pois käytöstä)"
-                                                                         :sv "Standard arbetsflöde (avaktiverat)"}
-                                                                 :resource-id res1
-                                                                 :form-id form
-                                                                 :organization {:organization/id "nbn"}
-                                                                 :workflow-id (:default workflows)
-                                                                 :categories [ordinary-category]})]
-      (create-disabled-applications! default-disabled
-                                     (users :applicant2)
-                                     (users :approver1))
-      (db/set-catalogue-item-enabled! {:id default-disabled :enabled false}))
-    (let [default-expired (test-helpers/create-catalogue-item! {:actor owner
-                                                                :title {:en "Default workflow (expired)"
-                                                                        :fi "Oletustyövuo (vanhentunut)"
-                                                                        :sv "Standard arbetsflöde (utgånget)"}
-                                                                :resource-id res1
-                                                                :form-id form
-                                                                :organization {:organization/id "nbn"}
-                                                                :workflow-id (:default workflows)
-                                                                :categories [ordinary-category]})]
-      (db/set-catalogue-item-endt! {:id default-expired :end (time/now)}))
-    (test-helpers/create-catalogue-item! {:actor organization-owner1
-                                          :title {:en "Owned by organization owner"
-                                                  :fi "Organisaatio-omistajan omistama"
-                                                  :sv "Ägas av organisationägare"}
-                                          :resource-id res-organization-owner
-                                          :form-id form-organization-owner
-                                          :organization {:organization/id "organization1"}
-                                          :workflow-id (:organization-owner workflows)
-                                          :categories [special-category]})
-    ;; forms with public and private fields, and catalogue items and applications using them
-    (let [applicant (users :applicant1)
-          member (users :applicant2)
-          handler (users :approver2)
-          reviewer (users :reviewer)
-          catid-1 (test-helpers/create-catalogue-item! {:actor owner
-                                                        :title {:en "Default workflow with public and private fields"
-                                                                :fi "Testityövuo julkisilla ja yksityisillä lomakekentillä"
-                                                                :sv "Standard arbetsflöde med publika och privata textfält"}
-                                                        :resource-id res1
-                                                        :form-id form-with-public-and-private-fields
-                                                        :organization {:organization/id "nbn"}
-                                                        :workflow-id (:default workflows)
-                                                        :categories [ordinary-category]})
-          catid-2 (test-helpers/create-catalogue-item! {:actor owner
-                                                        :title {:en "Default workflow with private form"
-                                                                :fi "Oletustyövuo yksityisellä lomakkeella"
-                                                                :sv "Standard arbetsflöde med privat blankett"}
-                                                        :resource-id res2
-                                                        :form-id form-private-nbn
-                                                        :organization {:organization/id "nbn"}
-                                                        :workflow-id (:default workflows)
-                                                        :categories [ordinary-category]})
-          app-id (test-helpers/create-draft! applicant [catid-1 catid-2] "two-form draft application")]
-      (test-helpers/invite-and-accept-member! {:actor applicant
-                                               :application-id app-id
-                                               :member (get users-data member)})
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor handler
-                              :reviewers [reviewer]
-                              :comment "please have a look"}))
-    ;; applications with DUO fields
-    (let [applicant (users :applicant1)
-          handler (users :approver2)
-          reviewer (users :reviewer)
-          duo-resource-1 (test-helpers/create-resource!
-                          {:resource-ext-id "Eyelid melanoma samples"
-                           :organization {:organization/id "nbn"}
-                           :actor owner
-                           :resource/duo {:duo/codes [{:id "DUO:0000007" :restrictions [{:type :mondo
-                                                                                         :values [{:id "MONDO:0000928"}]}]}
-                                                      {:id "DUO:0000015"}
-                                                      {:id "DUO:0000019"}
-                                                      {:id "DUO:0000027"
-                                                       :restrictions [{:type :project
-                                                                       :values [{:value "project name here"}]}]
-                                                       :more-info {:en "List of approved projects can be found at http://www.google.fi"}}]}})
-          duo-resource-2 (test-helpers/create-resource!
-                          {:resource-ext-id "Spinal cord melanoma samples"
-                           :organization {:organization/id "nbn"}
-                           :actor owner
-                           :resource/duo {:duo/codes [{:id "DUO:0000007"
-                                                       :restrictions [{:type :mondo
-                                                                       :values [{:id "MONDO:0001893"}]}]}
-                                                      {:id "DUO:0000019"}
-                                                      {:id "DUO:0000027"
-                                                       :restrictions [{:type :project
-                                                                       :values [{:value "project name here"}]}]
-                                                       :more-info {:en "This DUO code is optional but recommended"}}]}})
-          cat-id (test-helpers/create-catalogue-item! {:actor owner
-                                                       :title {:en "Apply for eyelid melanoma dataset (EN)"
-                                                               :fi "Apply for eyelid melanoma dataset (FI)"
-                                                               :sv "Apply for eyelid melanoma dataset (SV)"}
-                                                       :resource-id duo-resource-1
-                                                       :form-id form
-                                                       :organization {:organization/id "nbn"}
-                                                       :workflow-id (:default workflows)
-                                                       :categories [special-category]})
-          cat-id-2 (test-helpers/create-catalogue-item! {:actor owner
-                                                         :title {:en "Apply for spinal cord melanoma dataset (EN)"
-                                                                 :fi "Apply for spinal cord melanoma dataset (FI)"
-                                                                 :sv "Apply for spinal cord melanoma dataset (SV)"}
-                                                         :resource-id duo-resource-2
+        cat-master (test-helpers/create-catalogue-item! {:actor owner
+                                                         :title {:en "Master workflow"
+                                                                 :fi "Master-työvuo"
+                                                                 :sv "Master-arbetsflöde"}
+                                                         :infourl {:en "http://www.google.com"
+                                                                   :fi "http://www.google.fi"
+                                                                   :sv "http://www.google.se"}
+                                                         :resource-id res1
                                                          :form-id form
                                                          :organization {:organization/id "nbn"}
-                                                         :workflow-id (:default workflows)
-                                                         :categories [special-category]})
-          app-id (test-helpers/create-draft! applicant [cat-id-2] "draft application with DUO codes")
-          app-id-2 (test-helpers/create-draft! applicant [cat-id] "application with DUO codes")]
-      (test-helpers/command! {:type :application.command/save-draft
-                              :application-id app-id
-                              :actor applicant
-                              :field-values []
-                              :duo-codes [{:id "DUO:0000007" :restrictions [{:type :mondo :values [{:id "MONDO:0000928"}]}]}]})
-      (test-helpers/command! {:type :application.command/save-draft
-                              :application-id app-id-2
-                              :actor applicant
-                              :field-values []
-                              :duo-codes [{:id "DUO:0000007" :restrictions [{:type :mondo :values [{:id "MONDO:0000928"}]}]}
-                                          {:id "DUO:0000015"}
-                                          {:id "DUO:0000019"}
-                                          {:id "DUO:0000027" :restrictions [{:type :project :values [{:value "my project"}]}]}]})
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id-2
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id-2
-                              :actor handler
-                              :reviewers [reviewer]
-                              :comment "please have a look"}))
-    ;; create application to demo attachment redaction feature
-    (let [applicant (:applicant1 users)
-          member (:applicant2 users)
-          decider (:decider users)
-          handler (:approver2 users) ; "handler"
-          handler2 (:approver1 users) ; "developer"
-          reviewer (:reviewer users)
-          form-id (test-helpers/create-form! {:actor owner
-                                              :organization {:organization/id "nbn"}
-                                              :form/internal-name "Redaction test form"
-                                              :form/external-title {:en "Form"
-                                                                    :fi "Lomake"
-                                                                    :sv "Blankett"}
-                                              :form/fields [{:field/type :description
-                                                             :field/title {:en "Application title field"
-                                                                           :fi "Hakemuksen otsikko -kenttä"
-                                                                           :sv "Ansökningens rubrikfält"}
-                                                             :field/optional false}
-                                                            {:field/type :attachment
-                                                             :field/title {:en "Attachment"
-                                                                           :fi "Liitetiedosto"
-                                                                           :sv "Bilaga"}
-                                                             :field/optional false}]})
-          resource-id (test-helpers/create-resource! {:resource-ext-id "Attachment redaction test"
-                                                      :organization {:organization/id "nbn"}
-                                                      :actor owner})
-          cat-id (test-helpers/create-catalogue-item! {:actor owner
-                                                       :title {:en "Complicated data request (EN)"
-                                                               :fi "Complicated data request (FI)"
-                                                               :sv "Complicated data request (SV)"}
-                                                       :resource-id resource-id
-                                                       :form-id form-id
-                                                       :organization {:organization/id "nbn"}
-                                                       :workflow-id (:decider workflows)
-                                                       :categories [special-category]})
-          app-id (test-helpers/create-draft! applicant [cat-id] "redacted attachments")]
-      (test-helpers/invite-and-accept-member! {:actor applicant
-                                               :application-id app-id
-                                               :member (get users-data member)})
-      (test-helpers/fill-form! {:application-id app-id
-                                :actor applicant
-                                :field-value "complicated application with lots of attachments and five special characters \"åöâīē\""
-                                :attachment (test-helpers/create-attachment! {:actor applicant
-                                                                              :application-id app-id
-                                                                              :filename "applicant_attachment.pdf"})})
-      ;; (delete-orphan-attachments-on-submit) process manager removes all dangling attachments,
-      ;; so we submit application first before creating more attachments
-      (test-helpers/command! {:type :application.command/submit
-                              :application-id app-id
-                              :actor applicant})
-      (test-helpers/command! {:type :application.command/request-review
-                              :application-id app-id
-                              :actor handler
-                              :reviewers [reviewer]
-                              :comment "please have a look. see attachment for details"
-                              :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
-                                                                                              :application-id app-id
-                                                                                              :filename (str "handler_" (random-long-string 5) ".pdf")})}]})
-      (test-helpers/command! {:type :application.command/review
-                              :application-id app-id
-                              :actor reviewer
-                              :comment "here are my thoughts. see attachments for details"
-                              :attachments [{:attachment/id (test-helpers/create-attachment! {:actor reviewer
-                                                                                              :application-id app-id
-                                                                                              :filename "reviewer_attachment.pdf"})}]})
-      (let [handler2-attachments (vec (for [att ["process_document_one.pdf" "process_document_two.pdf" "process_document_three.pdf"]]
-                                        {:attachment/id (test-helpers/create-attachment! {:actor handler2
-                                                                                          :application-id app-id
-                                                                                          :filename att})}))]
-        (test-helpers/command! {:type :application.command/remark
-                                :application-id app-id
-                                :actor handler2
-                                :comment "see the attached process documents"
-                                :public true
-                                :attachments handler2-attachments})
-        (test-helpers/command! {:type :application.command/request-decision
-                                :application-id app-id
-                                :actor handler
-                                :comment "please decide, here are my final notes"
-                                :deciders [decider]
-                                :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
-                                                                                                :application-id app-id
-                                                                                                :filename "handler_attachment.pdf"})}]})
-        (test-helpers/command! {:type :application.command/remark
-                                :application-id app-id
-                                :actor decider
-                                :comment "thank you, i will make my decision soon"
-                                :public false
-                                :attachments [{:attachment/id (test-helpers/create-attachment! {:actor decider
-                                                                                                :application-id app-id
-                                                                                                :filename "decider_attachment.pdf"})}]})
-        (test-helpers/command! {:type :application.command/redact-attachments
-                                :application-id app-id
-                                :actor handler
-                                :comment "updated the process documents to latest version"
-                                :public true
-                                :redacted-attachments (vec (rest handler2-attachments))
-                                :attachments [{:attachment/id (test-helpers/create-attachment! {:actor handler
-                                                                                                :application-id app-id
-                                                                                                :filename "process_document_two.pdf"})}
-                                              {:attachment/id (test-helpers/create-attachment! {:actor handler
-                                                                                                :application-id app-id
-                                                                                                :filename "process_document_three.pdf"})}]})))))
+                                                         :workflow-id master-workflow
+                                                         :categories [technical-category]})
+        cat-decider (test-helpers/create-catalogue-item! {:actor owner
+                                                          :title {:en "Decider workflow"
+                                                                  :fi "Päättäjätyövuo"
+                                                                  :sv "Arbetsflöde för beslutsfattande"}
+                                                          :infourl {:en "http://www.google.com"
+                                                                    :fi "http://www.google.fi"
+                                                                    :sv "http://www.google.se"}
+                                                          :resource-id res1
+                                                          :form-id form
+                                                          :organization {:organization/id "nbn"}
+                                                          :workflow-id decider-workflow
+                                                          :categories [special-category]})
+        cat-default (test-helpers/create-catalogue-item! {:actor owner
+                                                          :title {:en "Default workflow"
+                                                                  :fi "Oletustyövuo"
+                                                                  :sv "Standard arbetsflöde"}
+                                                          :infourl {:en "http://www.google.com"
+                                                                    :fi "http://www.google.fi"
+                                                                    :sv "http://www.google.se"}
+                                                          :resource-id res1
+                                                          :form-id form
+                                                          :organization {:organization/id "nbn"}
+                                                          :workflow-id default-workflow
+                                                          :categories [ordinary-category]})
+        cat-default-2 (test-helpers/create-catalogue-item! {:actor owner
+                                                            :title {:en "Default workflow 2"
+                                                                    :fi "Oletustyövuo 2"
+                                                                    :sv "Standard arbetsflöde 2"}
+                                                            :resource-id res2
+                                                            :form-id form-private-thl
+                                                            :organization {:organization/id "csc"}
+                                                            :workflow-id default-workflow
+                                                            :categories [ordinary-category]})
+        cat-default-3 (test-helpers/create-catalogue-item! {:actor owner
+                                                            :title {:en "Default workflow 3"
+                                                                    :fi "Oletustyövuo 3"
+                                                                    :sv "Standard arbetsflöde 3"}
+                                                            :resource-id res3
+                                                            :form-id form-private-hus
+                                                            :organization {:organization/id "hus"}
+                                                            :workflow-id default-workflow
+                                                            :categories [ordinary-category]})
+        cat-default-extra-license (test-helpers/create-catalogue-item! {:actor owner
+                                                                        :title {:en "Default workflow with extra license"
+                                                                                :fi "Oletustyövuo ylimääräisellä lisenssillä"
+                                                                                :sv "Arbetsflöde med extra licens"}
+                                                                        :resource-id res-with-extra-license
+                                                                        :form-id form
+                                                                        :organization {:organization/id "nbn"}
+                                                                        :workflow-id default-workflow
+                                                                        :categories [ordinary-category]})
+        cat-auto-approve (test-helpers/create-catalogue-item! {:title {:en "Auto-approve workflow"
+                                                                       :fi "Työvuo automaattisella hyväksynnällä"
+                                                                       :sv "Arbetsflöde med automatisk godkänning"}
+                                                               :infourl {:en "http://www.google.com"
+                                                                         :fi "http://www.google.fi"
+                                                                         :sv "http://www.google.se"}
+                                                               :resource-id res1
+                                                               :form-id form
+                                                               :organization {:organization/id "nbn"}
+                                                               :workflow-id auto-approve-workflow
+                                                               :categories [special-category]})
+        cat-organization-owner (test-helpers/create-catalogue-item! {:actor organization-owner1
+                                                                     :title {:en "Owned by organization owner"
+                                                                             :fi "Organisaatio-omistajan omistama"
+                                                                             :sv "Ägas av organisationägare"}
+                                                                     :resource-id res-organization-owner
+                                                                     :form-id form-organization-owner
+                                                                     :organization {:organization/id "organization1"}
+                                                                     :workflow-id organization-owner-workflow
+                                                                     :categories [special-category]})
 
-(defn create-organizations! [users]
-  (let [owner (users :owner)
-        organization-owner1 (users :organization-owner1)
-        organization-owner2 (users :organization-owner2)]
-    ;; Create organizations
-    (test-helpers/create-organization! {:actor owner :users users})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "hus"
-                                        :organization/name {:fi "Helsingin yliopistollinen sairaala" :en "Helsinki University Hospital" :sv "Helsingfors Universitetssjukhus"}
-                                        :organization/short-name {:fi "HUS" :en "HUS" :sv "HUS"}
-                                        :organization/owners [{:userid organization-owner1}]
-                                        :organization/review-emails []})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "thl"
-                                        :organization/name {:fi "Terveyden ja hyvinvoinnin laitos" :en "Finnish institute for health and welfare" :sv "Institutet för hälsa och välfärd"}
-                                        :organization/short-name {:fi "THL" :en "THL" :sv "THL"}
-                                        :organization/owners [{:userid organization-owner2}]
-                                        :organization/review-emails []})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "nbn"
-                                        :organization/name {:fi "NBN" :en "NBN" :sv "NBN"}
-                                        :organization/short-name {:fi "NBN" :en "NBN" :sv "NBN"}
-                                        :organization/owners [{:userid organization-owner2}]
-                                        :organization/review-emails []})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "abc"
-                                        :organization/name {:fi "ABC" :en "ABC" :sv "ABC"}
-                                        :organization/short-name {:fi "ABC" :en "ABC" :sv "ABC"}
-                                        :organization/owners []
-                                        :organization/review-emails [{:name {:fi "ABC Kirjaamo"} :email "kirjaamo@abc.efg"}]})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "csc"
-                                        :organization/name {:fi "CSC – TIETEEN TIETOTEKNIIKAN KESKUS OY" :en "CSC – IT CENTER FOR SCIENCE LTD." :sv "CSC – IT CENTER FOR SCIENCE LTD."}
-                                        :organization/short-name {:fi "CSC" :en "CSC" :sv "CSC"}
-                                        :organization/owners []
-                                        :organization/review-emails []})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "organization1"
-                                        :organization/name {:fi "Organization 1" :en "Organization 1" :sv "Organization 1"}
-                                        :organization/short-name {:fi "ORG 1" :en "ORG 1" :sv "ORG 1"}
-                                        :organization/owners [{:userid organization-owner1}]
-                                        :organization/review-emails []})
-    (test-helpers/create-organization! {:actor owner
-                                        :organization/id "organization2"
-                                        :organization/name {:fi "Organization 2" :en "Organization 2" :sv "Organization 2"}
-                                        :organization/short-name {:fi "ORG 2" :en "ORG 2" :sv "ORG 2"}
-                                        :organization/owners [{:userid organization-owner2}]
-                                        :organization/review-emails []})))
+        shared-test-data {:catalogue-items {:master cat-master
+                                            :decider cat-decider
+                                            :default cat-default
+                                            :default-2 cat-default-2
+                                            :default-3 cat-default-3
+                                            :default-extra-license cat-default-extra-license
+                                            :auto-approve cat-auto-approve
+                                            :organization-owner cat-organization-owner}
+                          :categories {:ordinary ordinary-category
+                                       :technical technical-category
+                                       :special special-category}
+                          :forms {:form form
+                                  :public-and-private-fields form-public-and-private-fields
+                                  :private-nbn form-private-nbn
+                                  :private-thl form-private-thl
+                                  :private-hus form-private-hus
+                                  :organization-owner form-organization-owner
+                                  :archived form-archived}
+                          :licenses {:license1 license1
+                                     :license2 license2
+                                     :extra-license extra-license
+                                     :license-organization-owner license-organization-owner
+                                     :attachment-license attachment-license
+                                     :disabled disabled-license
+                                     :workflow-link workflow-link-license
+                                     :workflow-text workflow-text-license}
+                          :resources {:res1 res1
+                                      :res2 res2
+                                      :res3 res3
+                                      :res-organization-owner res-organization-owner
+                                      :res-with-extra-license res-with-extra-license
+                                      :res-duplicate-resource-name1 res-duplicate-resource-name1
+                                      :res-duplicate-resource-name2 res-duplicate-resource-name2
+                                      :res-duplicate-resource-name-with-long-name1 res-duplicate-resource-name-with-long-name1
+                                      :res-duplicate-resource-name-with-long-name2 res-duplicate-resource-name-with-long-name2}
+                          :workflows {:default default-workflow
+                                      :decider decider-workflow
+                                      :master master-workflow
+                                      :auto-approve auto-approve-workflow
+                                      :organization-owner organization-owner-workflow
+                                      :with-form with-form-workflow}}]
 
+    (create-applications! shared-test-data)
+    (create-expiring-draft-applications! shared-test-data)
+    (create-disabled-applications! shared-test-data)
+    (create-bona-fide-items!)
+    (create-expired-catalogue-item! shared-test-data) ; XXX: catalogue expiration not in use?
+    (create-private-form-items! shared-test-data)
+    (create-anonymized-handling-items! shared-test-data)
+    (create-duo-items! shared-test-data)
+    (create-attachment-redaction-items! shared-test-data)))
+
+(def +test-api-key+ "42")
+
+;; XXX: several tests depend on this function
 (defn create-test-api-key! []
-  (api-key/add-api-key! +test-api-key+ {:comment "test data"}))
+  (rems.db.api-key/add-api-key! +test-api-key+ {:comment "test data"}))
 
-(defn create-owners!
-  "Create an owner, two organization owners, and their organizations."
-  []
-  (create-test-api-key!)
-  (test-helpers/create-user! (+fake-user-data+ "owner") :owner)
-  (test-helpers/create-user! (+fake-user-data+ "organization-owner1"))
-  (test-helpers/create-user! (+fake-user-data+ "organization-owner2"))
-  (test-helpers/create-organization! {:actor "owner" :users +fake-users+})
-  (test-helpers/create-organization! {:actor "owner"
-                                      :organization/id "organization1"
-                                      :organization/name {:fi "Organization 1" :en "Organization 1" :sv "Organization 1"}
-                                      :organization/short-name {:fi "ORG 1" :en "ORG 1" :sv "ORG 1"}
-                                      :organization/owners [{:userid "organization-owner1"}]
-                                      :organization/review-emails []})
-  (test-helpers/create-organization! {:actor "owner"
-                                      :organization/id "organization2"
-                                      :organization/name {:fi "Organization 2" :en "Organization 2" :sv "Organization 2"}
-                                      :organization/short-name {:fi "ORG 2" :en "ORG 2" :sv "ORG 2"}
-                                      :organization/owners [{:userid "organization-owner2"}]
-                                      :organization/review-emails []}))
+(defn create-demo-api-key! []
+  (rems.db.api-key/add-api-key! 55 {:comment "Finna"}))
 
-(defn create-test-data! []
-  (test-helpers/assert-no-existing-data!)
-  (create-test-api-key!)
-  (create-test-users-and-roles!)
-  (create-organizations! +fake-users+)
-  (create-bots!)
-  (create-items! +fake-users+ +fake-user-data+))
+(defn create-users-and-roles! [& [{:keys [roles]}]]
+  (let [users (getx-test-users)
+        roles (or roles
+                  {(:owner users) #{:owner}
+                   (:reporter users) #{:reporter}
+                   (:expirer-bot users) #{:expirer}})]
+    (doseq [user (vals users)
+            :let [attributes (getx-test-user-data user)]]
+      (apply test-helpers/create-user!
+             attributes
+             (get roles user)))))
 
-(defn create-demo-data! []
-  (test-helpers/assert-no-existing-data!)
-  (let [[users user-data] (case (:authentication rems.config/env)
-                            :oidc [+oidc-users+ +oidc-user-data+]
-                            [+demo-users+ +demo-user-data+])]
-    (api-key/add-api-key! 55 {:comment "Finna"})
-    (create-users-and-roles! users user-data)
-    (create-organizations! users)
-    (create-bots!)
-    (create-items! users user-data)))
+;; XXX: several tests depend on this function
+(defn create-test-users-and-roles! []
+  (binding [context/*test-users* +fake-users+
+            context/*test-user-data* +fake-user-data+]
+    (create-users-and-roles! {:roles {(getx-test-users :owner) #{:owner}
+                                      (getx-test-users :reporter) #{:reporter}}}))
+  (db/add-user! {:user "invalid" :userattrs nil}))
+
+(defn create-test-data! [& [print-invocations?]]
+  (binding [context/*test-users* (merge +bot-users+ +fake-users+)
+            context/*test-user-data* (merge +bot-user-data+ +fake-user-data+)
+            context/*print-test-invocations* (true? print-invocations?)]
+
+    (test-helpers/assert-no-existing-data!)
+    (create-test-api-key!)
+    (create-users-and-roles!)
+    (create-organizations!)
+    (create-items!)))
+
+(defn create-demo-data! [& [print-invocations?]]
+  (binding [context/*test-users* (merge +bot-users+ (case (:authentication rems.config/env)
+                                                      :oidc +oidc-users+
+                                                      +demo-users+))
+            context/*test-user-data* (merge +bot-user-data+ (case (:authentication rems.config/env)
+                                                              :oidc +oidc-user-data+
+                                                              +demo-user-data+))
+            context/*print-test-invocations* (true? print-invocations?)]
+
+    (test-helpers/assert-no-existing-data!)
+    (create-demo-api-key!)
+    (create-users-and-roles!)
+    (create-organizations!)
+    (create-items!)))
 
 (comment
   (do ; you can manually re-create test data (useful sometimes when debugging)
     (luminus-migrations.core/migrate ["reset"] (select-keys rems.config/env [:database-url]))
-    (create-test-data!)
+    (create-test-data! true)
+    (create-demo-data! true)
     (create-performance-test-data!)))

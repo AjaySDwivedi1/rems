@@ -64,5 +64,5 @@
 
 (deftest test-create-demo-data!
   ;; just a smoke test, check that create-demo-data doesn't fail
-  (test-data/create-demo-data!)
+  (test-data/create-demo-data! true)
   (is true))

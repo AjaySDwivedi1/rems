@@ -1,5 +1,6 @@
 (ns rems.application
-  (:require [clojure.string :as str]
+  (:require [better-cond.core :as b]
+            [clojure.string :as str]
             [clojure.set :refer [union]]
             [goog.string]
             [reagent.core :as r]
@@ -12,6 +13,7 @@
             [rems.actions.approve-reject :refer [approve-reject-action-button approve-reject-form]]
             [rems.actions.assign-external-id :refer [assign-external-id-button assign-external-id-form]]
             [rems.actions.change-applicant :refer [change-applicant-action-button change-applicant-form]]
+            [rems.actions.change-processing-state :refer [change-processing-state-action-button change-processing-state-form]]
             [rems.actions.change-resources :refer [change-resources-action-button change-resources-form]]
             [rems.actions.close :refer [close-action-button close-form]]
             [rems.actions.components :refer [perform-action-button]]
@@ -106,26 +108,26 @@
 (rf/reg-sub ::readonly? :<- [::application] (comp not form-fields-editable?))
 
 (rf/reg-event-fx
- ::enter-application-page
- (fn [{:keys [db]} [_ id]]
-   {:db (-> db
-            (assoc ::application-id (parse-int id))
-            (dissoc ::application
-                    ::edit-application
-                    ::duo-codes
-                    ::autosaving))
-    :dispatch-n (if (-> db :config :enable-duo)
-                  [[::fetch-application id true] [::duo-codes]]
-                  [[::fetch-application id true]])}))
+  ::enter-application-page
+  (fn [{:keys [db]} [_ id]]
+    {:db (-> db
+             (assoc ::application-id (parse-int id))
+             (dissoc ::application
+                     ::edit-application
+                     ::duo-codes
+                     ::autosaving))
+     :dispatch-n (if (-> db :config :enable-duo)
+                   [[::fetch-application id true] [::duo-codes]]
+                   [[::fetch-application id true]])}))
 
 (rf/reg-event-fx
- ::fetch-application
- (fn [{:keys [db]} [_ id full-reload?]]
-   (fetch (str "/api/applications/" id)
-          {:handler #(rf/dispatch [::fetch-application-result % full-reload?])
-           :error-handler (comp #(rf/dispatch [::fetch-application-result nil full-reload?])
-                                (flash-message/default-error-handler :top [text :t.applications/application]))})
-   {:db (update db ::application fetcher/started)}))
+  ::fetch-application
+  (fn [{:keys [db]} [_ id full-reload?]]
+    (fetch (str "/api/applications/" id)
+           {:handler #(rf/dispatch [::fetch-application-result % full-reload?])
+            :error-handler (comp #(rf/dispatch [::fetch-application-result nil full-reload?])
+                                 (flash-message/default-error-handler :top [text :t.applications/application]))})
+    {:db (update db ::application fetcher/started)}))
 
 (defn- index-duo-restrictions [restrictions]
   (->> restrictions
@@ -165,19 +167,19 @@
                                   :attachment-status {}})))
 
 (rf/reg-event-fx
- ::fetch-application-result
- (fn [{:keys [db]} [_ application full-reload?]]
-   (let [initial-fetch? (not (:initialized? (::application db)))]
-     {:db (-> db
-              (update ::application fetcher/finished application)
-              (cond-> (or initial-fetch? full-reload?) (initialize-edit-application)))})))
+  ::fetch-application-result
+  (fn [{:keys [db]} [_ application full-reload?]]
+    (let [initial-fetch? (not (:initialized? (::application db)))]
+      {:db (-> db
+               (update ::application fetcher/finished application)
+               (cond-> (or initial-fetch? full-reload?) (initialize-edit-application)))})))
 
 (rf/reg-event-db
- ::set-validations
- (fn [db [_ errors warnings]]
-   (-> db
-       (assoc-in [::edit-application :validation :errors] errors)
-       (assoc-in [::edit-application :validation :warnings] warnings))))
+  ::set-validations
+  (fn [db [_ errors warnings]]
+    (-> db
+        (assoc-in [::edit-application :validation :errors] errors)
+        (assoc-in [::edit-application :validation :warnings] warnings))))
 
 (defn- field-values-to-api [application field-values]
   (for [form (:application/forms application)
@@ -225,22 +227,22 @@
                                 (if (some? values) [{:value values}] []))})}))
 
 (rf/reg-event-fx
- ::validate-application
- (fn [{:keys [db]} [_]]
-   (let [application (:data (::application db))
-         edit-application (::edit-application db)
-         description [text :t.applications/continue-existing-application]]
-     (flash-message/clear-message! :actions)
-     (post! "/api/applications/validate"
-            {:params {:application-id (:application/id application)
-                      :field-values (field-values-to-api application (:field-values edit-application))
-                      :duo-codes (duo-codes-to-api (vals (:duo-codes edit-application)))}
-             :handler (fn [response]
-                        (handle-validations! (dissoc response :errors) ; only use the warnings in this step
-                                             description application {:default-success? false
-                                                                      :warn-about-missing? false})) ; don't complain about unfilled required fields
-             :error-handler (flash-message/default-error-handler :actions description)})
-     {})))
+  ::validate-application
+  (fn [{:keys [db]} [_]]
+    (let [application (:data (::application db))
+          edit-application (::edit-application db)
+          description [text :t.applications/continue-existing-application]]
+      (flash-message/clear-message! :actions)
+      (post! "/api/applications/validate"
+             {:params {:application-id (:application/id application)
+                       :field-values (field-values-to-api application (:field-values edit-application))
+                       :duo-codes (duo-codes-to-api (vals (:duo-codes edit-application)))}
+              :handler (fn [response]
+                         (handle-validations! (dissoc response :errors) ; only use the warnings in this step
+                                              description application {:default-success? false
+                                                                       :warn-about-missing? false})) ; don't complain about unfilled required fields
+              :error-handler (flash-message/default-error-handler :actions description)})
+      {})))
 
 (defn- save-draft! [description application edit-application handler & [{:keys [error-handler]}]]
   (flash-message/clear-message! :actions)
@@ -253,85 +255,85 @@
                              (flash-message/default-error-handler :actions description))}))
 
 (rf/reg-event-fx
- ::save-application
- (fn [{:keys [db]} [_ description on-success]]
-   (let [application (:data (::application db))
-         edit-application (::edit-application db)]
-     (save-draft! description
-                  application
-                  edit-application
-                  (fn [response]
-                    (rf/dispatch [::fetch-application (:application/id application)])
-                    (handle-validations! response description application {:on-success on-success}))))
-   {:db (-> db
-            (assoc-in [::edit-application :validation :errors] nil)
-            (assoc-in [::edit-application :validation :warnings] nil))}))
+  ::save-application
+  (fn [{:keys [db]} [_ description on-success]]
+    (let [application (:data (::application db))
+          edit-application (::edit-application db)]
+      (save-draft! description
+                   application
+                   edit-application
+                   (fn [response]
+                     (rf/dispatch [::fetch-application (:application/id application)])
+                     (handle-validations! response description application {:on-success on-success}))))
+    {:db (-> db
+             (assoc-in [::edit-application :validation :errors] nil)
+             (assoc-in [::edit-application :validation :warnings] nil))}))
 
 (rf/reg-event-db ::set-autosaving (fn [db [_ value]] (assoc db ::autosaving value)))
 (rf/reg-sub ::autosaving (fn [db _] (::autosaving db)))
 
 (rf/reg-event-fx
- ::autosave-application
- (fn [{:keys [db]} [_]]
-   (if (-> db :config :enable-autosave)
-     (let [application (-> db ::application :data)
-           edit-application (::edit-application db)
-           description [text :t.form/autosave]]
-       (save-draft! description
-                    application
-                    edit-application
-                    (fn [response]
-                      (rf/dispatch [::fetch-application (:application/id application) false])
-                      (handle-validations! response description application {:on-success #(do (rf/dispatch [::set-autosaving false])
-                                                                                              (flash-message/show-quiet-success! :actions [text :t.form/autosave-confirmed] {:content [[text-format :t.form/last-save (localize-time-with-seconds (time-core/now))]]}))
-                                                                             :default-success? false
-                                                                             :focus? false
-                                                                             :warn-about-missing? false}))
-                    {:error-handler (fn [err]
-                                      (rf/dispatch [::set-autosaving false]))})
-       {:db (-> db
-                (assoc ::autosaving true)
-                (assoc-in [::edit-application :validation :errors] nil)
-                (assoc-in [::edit-application :validation :warnings] nil))})
-     {})))
+  ::autosave-application
+  (fn [{:keys [db]} [_]]
+    (if (-> db :config :enable-autosave)
+      (let [application (-> db ::application :data)
+            edit-application (::edit-application db)
+            description [text :t.form/autosave]]
+        (save-draft! description
+                     application
+                     edit-application
+                     (fn [response]
+                       (rf/dispatch [::fetch-application (:application/id application) false])
+                       (handle-validations! response description application {:on-success #(do (rf/dispatch [::set-autosaving false])
+                                                                                               (flash-message/show-quiet-success! :actions [text :t.form/autosave-confirmed] {:content [[text-format :t.form/last-save (localize-time-with-seconds (time-core/now))]]}))
+                                                                              :default-success? false
+                                                                              :focus? false
+                                                                              :warn-about-missing? false}))
+                     {:error-handler (fn [err]
+                                       (rf/dispatch [::set-autosaving false]))})
+        {:db (-> db
+                 (assoc ::autosaving true)
+                 (assoc-in [::edit-application :validation :errors] nil)
+                 (assoc-in [::edit-application :validation :warnings] nil))})
+      {})))
 
 (rf/reg-event-fx
- ::submit-application
- (fn [{:keys [db]} [_ description]]
-   (let [application (:data (::application db))
-         edit-application (::edit-application db)]
-     (save-draft! description
-                  application
-                  edit-application
-                  (fn [response] ; because warnings are treated as errors in submit, skip validation handling here
-                    (if-not (:success response)
-                      (handle-validations! response description application)
-                      (post! "/api/applications/submit"
-                             {:params {:application-id (:application/id application)}
-                              :handler (fn [response]
-                                         (handle-validations!
-                                          response
-                                          description
-                                          application
-                                          {:on-success (fn [] (rf/dispatch [::fetch-application (:application/id application)]))}))
-                              :error-handler (flash-message/default-error-handler :actions description)})))))
-   {:db (-> db
-            (assoc-in [::edit-application :validation :errors] nil)
-            (assoc-in [::edit-application :validation :warnings] nil))}))
+  ::submit-application
+  (fn [{:keys [db]} [_ description]]
+    (let [application (:data (::application db))
+          edit-application (::edit-application db)]
+      (save-draft! description
+                   application
+                   edit-application
+                   (fn [response] ; because warnings are treated as errors in submit, skip validation handling here
+                     (if-not (:success response)
+                       (handle-validations! response description application)
+                       (post! "/api/applications/submit"
+                              {:params {:application-id (:application/id application)}
+                               :handler (fn [response]
+                                          (handle-validations!
+                                           response
+                                           description
+                                           application
+                                           {:on-success (fn [] (rf/dispatch [::fetch-application (:application/id application)]))}))
+                               :error-handler (flash-message/default-error-handler :actions description)})))))
+    {:db (-> db
+             (assoc-in [::edit-application :validation :errors] nil)
+             (assoc-in [::edit-application :validation :warnings] nil))}))
 
 (rf/reg-event-fx
- ::copy-as-new-application
- (fn [{:keys [db]} _]
-   (let [application-id (get-in db [::application :data :application/id])
-         description [text :t.form/copy-as-new]]
-     (post! "/api/applications/copy-as-new"
-            {:params {:application-id application-id}
-             :handler (flash-message/default-success-handler
-                       :top ; the message will be shown on the new application's page
-                       description
-                       #(navigate! (str "/application/" (:application-id %))))
-             :error-handler (flash-message/default-error-handler :actions description)}))
-   {}))
+  ::copy-as-new-application
+  (fn [{:keys [db]} _]
+    (let [application-id (get-in db [::application :data :application/id])
+          description [text :t.form/copy-as-new]]
+      (post! "/api/applications/copy-as-new"
+             {:params {:application-id application-id}
+              :handler (flash-message/default-success-handler
+                        :top ; the message will be shown on the new application's page
+                        description
+                        #(navigate! (str "/application/" (:application-id %))))
+              :error-handler (flash-message/default-error-handler :actions description)}))
+    {}))
 
 (defn- save-attachment [{:keys [db]} [_ form-id field-id file]]
   (let [application-id (get-in db [::application :data :application/id])
@@ -387,61 +389,61 @@
 (rf/reg-event-fx ::save-attachment save-attachment)
 
 (rf/reg-event-fx
- ::remove-attachment
- (fn [{:keys [db]} [_ form-id field-id attachment-id]]
-   (fields/always-on-change attachment-id)
-   {:db (update-in db [::edit-application :field-values form-id field-id]
-                   (comp form/unparse-attachment-ids
-                         (partial remove #{attachment-id})
-                         form/parse-attachment-ids))}))
+  ::remove-attachment
+  (fn [{:keys [db]} [_ form-id field-id attachment-id]]
+    (fields/always-on-change attachment-id)
+    {:db (update-in db [::edit-application :field-values form-id field-id]
+                    (comp form/unparse-attachment-ids
+                          (partial remove #{attachment-id})
+                          form/parse-attachment-ids))}))
 
 (rf/reg-event-db
- ::set-field-value
- (fn [db [_ form-id field-id value]]
-   (assoc-in db [::edit-application :field-values form-id field-id] value)))
+  ::set-field-value
+  (fn [db [_ form-id field-id value]]
+    (assoc-in db [::edit-application :field-values form-id field-id] value)))
 
 (rf/reg-event-db
- ::set-attachment-status
- (fn [db [_ form-id field-id value]]
-   (assoc-in db [::edit-application :attachment-status form-id field-id] value)))
+  ::set-attachment-status
+  (fn [db [_ form-id field-id value]]
+    (assoc-in db [::edit-application :attachment-status form-id field-id] value)))
 
 (rf/reg-event-db
- ::toggle-diff
- (fn [db [_ form-id field-id]]
-   (update-in db [::edit-application :show-diff form-id field-id] not)))
+  ::toggle-diff
+  (fn [db [_ form-id field-id]]
+    (update-in db [::edit-application :show-diff form-id field-id] not)))
 
 (rf/reg-event-db
- ::set-duo-codes
- (fn [db [_ duos]]
-   (let [existing-codes (-> db ::edit-application :duo-codes)
-         duos (for [duo duos]
-                (update duo :restrictions #(build-index {:keys [:type] :value-fn :values} %)))]
-     (-> db
-         (assoc-in [::edit-application :duo-codes]
-                   (->> duos
-                        (map #(get existing-codes (:id %) %))
-                        (build-index {:keys [:id]})))))))
+  ::set-duo-codes
+  (fn [db [_ duos]]
+    (let [existing-codes (-> db ::edit-application :duo-codes)
+          duos (for [duo duos]
+                 (update duo :restrictions #(build-index {:keys [:type] :value-fn :values} %)))]
+      (-> db
+          (assoc-in [::edit-application :duo-codes]
+                    (->> duos
+                         (map #(get existing-codes (:id %) %))
+                         (build-index {:keys [:id]})))))))
 
 (fetcher/reg-fetcher ::previous-applications "/api/applications")
 (fetcher/reg-fetcher ::duo-codes "/api/resources/duo-codes")
 
 (rf/reg-sub
- ::previous-applications-except-current
- (fn [& _]
-   [(rf/subscribe [::application-id])
-    (rf/subscribe [::previous-applications])
-    (rf/subscribe [::previous-applications :error])
-    (rf/subscribe [::previous-applications :initialized?])
-    (rf/subscribe [::previous-applications :fetching?])
-    (rf/subscribe [::previous-applications :searching?])])
- (fn [[application-id data error initialized? fetching? searching?]
-      [_id key]]
-   (case key
-     :error error
-     :initialized? initialized?
-     :fetching? fetching?
-     :searching? searching?
-     nil (filterv #(not= application-id (:application/id %)) data))))
+  ::previous-applications-except-current
+  (fn [& _]
+    [(rf/subscribe [::application-id])
+     (rf/subscribe [::previous-applications])
+     (rf/subscribe [::previous-applications :error])
+     (rf/subscribe [::previous-applications :initialized?])
+     (rf/subscribe [::previous-applications :fetching?])
+     (rf/subscribe [::previous-applications :searching?])])
+  (fn [[application-id data error initialized? fetching? searching?]
+       [_id key]]
+    (case key
+      :error error
+      :initialized? initialized?
+      :fetching? fetching?
+      :searching? searching?
+      nil (filterv #(not= application-id (:application/id %)) data))))
 
 ;;;; UI components
 
@@ -524,44 +526,44 @@
                           :on-click #(rf/dispatch [::copy-as-new-application])}])
 
 (rf/reg-sub
- ::get-field-value
- (fn [db [_ form-id field-id]]
-   (get-in db [::edit-application :field-values form-id field-id])))
+  ::get-field-value
+  (fn [db [_ form-id field-id]]
+    (get-in db [::edit-application :field-values form-id field-id])))
 
 (rf/reg-sub
- ::get-field-diff
- (fn [db [_ form-id field-id]]
-   (get-in db [::edit-application :show-diff form-id field-id])))
+  ::get-field-diff
+  (fn [db [_ form-id field-id]]
+    (get-in db [::edit-application :show-diff form-id field-id])))
 
 (rf/reg-sub
- ::field-validations
- (fn [db _]
-   (let [validations (get-in db [::edit-application :validation])]
-     (index-by [:form-id :field-id]
-               (some seq [(:errors validations) (:warnings validations)])))))
+  ::field-validations
+  (fn [db _]
+    (let [validations (get-in db [::edit-application :validation])]
+      (index-by [:form-id :field-id]
+                (some seq [(:errors validations) (:warnings validations)])))))
 
 (rf/reg-sub
- ::get-field-validation
- :<- [::field-validations]
- (fn [field-validations [_ form-id field-id]]
-   (get-in field-validations [form-id field-id])))
+  ::get-field-validation
+  :<- [::field-validations]
+  (fn [field-validations [_ form-id field-id]]
+    (get-in field-validations [form-id field-id])))
 
 (rf/reg-sub
- ::get-field-attachment-status
- (fn [db [_ form-id field-id]]
-   (get-in db [::edit-application :attachment-status form-id field-id])))
+  ::get-field-attachment-status
+  (fn [db [_ form-id field-id]]
+    (get-in db [::edit-application :attachment-status form-id field-id])))
 
 (rf/reg-sub
- ::application-attachments-by-id
- :<- [::application]
- (fn [application _]
-   (index-by [:attachment/id] (:application/attachments application))))
+  ::application-attachments-by-id
+  :<- [::application]
+  (fn [application _]
+    (index-by [:attachment/id] (:application/attachments application))))
 
 (rf/reg-sub
- ::get-attachment-by-id
- :<- [::application-attachments-by-id]
- (fn [attachments-by-id [_ attachment-id]]
-   (attachments-by-id attachment-id)))
+  ::get-attachment-by-id
+  :<- [::application-attachments-by-id]
+  (fn [attachments-by-id [_ attachment-id]]
+    (attachments-by-id attachment-id)))
 
 (defn- field-container
   "A container component for field that isolates the pure render component
@@ -661,23 +663,30 @@
        (str prefix " "))
      (application-list/format-application-id config application)]))
 
-(defn- event-description [event]
-  (case (:event/visibility event)
-    :visibility/public
-    [:div.row.no-gutters.gap-1
-     [:div.col-sm-auto
-      [:i.fas.fa-eye {:title (text :t.applications.event/shown-to-applicant)}
-       [:span.sr-only (text :t.applications.event/shown-to-applicant)]]]
-     [:b.col-sm (localize-event event)]]
+(defn- event-description [event {:keys [processing-states]}]
+  (b/cond
+    :let [state (some-> event
+                        :processing-state/value
+                        (as-> value (find-first (comp #{value} :value) processing-states)))
+          event (cond-> event
+                  state (assoc :processing-state/title (:title state)))]
 
-    :visibility/handling-users
-    [:div.row.no-gutters.gap-1
-     [:div.col-sm-auto
-      [:i.fas.fa-eye-slash {:title (text :t.applications.event/not-shown-to-applicant)}
-       [:span.sr-only (text :t.applications.event/not-shown-to-applicant)]]]
-     [:b.col-sm (localize-event event)]]
+    (case (:event/visibility event)
+      :visibility/public
+      [:div.row.no-gutters.gap-1
+       [:div.col-sm-auto
+        [:i.fas.fa-eye {:title (text :t.applications.event/shown-to-applicant)}
+         [:span.sr-only (text :t.applications.event/shown-to-applicant)]]]
+       [:b.col-sm (localize-event event)]]
 
-    [:b (localize-event event)]))
+      :visibility/handling-users
+      [:div.row.no-gutters.gap-1
+       [:div.col-sm-auto
+        [:i.fas.fa-eye-slash {:title (text :t.applications.event/not-shown-to-applicant)}
+         [:span.sr-only (text :t.applications.event/not-shown-to-applicant)]]]
+       [:b.col-sm (localize-event event)]]
+
+      [:b (localize-event event)])))
 
 (defn- event-attachments [attachments redacted-attachments]
   (cond
@@ -701,7 +710,7 @@
 
     :else nil))
 
-(defn- event-view [{:keys [attachments redacted-attachments]} event]
+(defn- event-view [{:keys [attachments processing-states redacted-attachments]} event]
   (let [decision (localize-decision event)
         comment (case (:event/type event)
                   :application.event/copied-from
@@ -716,7 +725,7 @@
      [:label.col-sm-2.col-form-label time]
      [:div.col-sm-10
       [:div.event-description.col-form-label
-       [event-description event]]
+       [event-description event {:processing-states processing-states}]]
       (when decision
         [:div.event-decision.mb-2 decision])
       (when comment
@@ -724,12 +733,17 @@
       [event-attachments attachments redacted-attachments]]]))
 
 (defn- render-events [application events]
-  (let [attachments-by-event-id (group-by (comp :event/id :attachment/event) (:application/attachments application))
-        attachments-by-id (index-by [:attachment/id] (:application/attachments application))]
-    (for [event events]
-      [event-view {:attachments (get attachments-by-event-id (:event/id event))
-                   :redacted-attachments (vec (for [redacted (:event/redacted-attachments event)]
-                                                (get attachments-by-id (:attachment/id redacted))))}
+  (let [attachments (:application/attachments application)
+        event-attachments-by-id (->> attachments
+                                     (group-by (comp :event/id :attachment/event)))
+        get-attachment-by-id (->> attachments
+                                  (index-by [:attachment/id]))
+        states (get-in application [:application/workflow :workflow/processing-states])]
+    (for [event events
+          :let [redacted (map :attachment/id (:event/redacted-attachments event))]]
+      [event-view {:attachments (get event-attachments-by-id (:event/id event))
+                   :processing-states states
+                   :redacted-attachments (mapv get-attachment-by-id redacted)}
        event])))
 
 (defn- get-application-phases [state]
@@ -784,6 +798,20 @@
                                  [application-link new-app nil]))))
        ")"])))
 
+(defn- render-application-state [application]
+  [:span#application-state
+   (b/cond
+     :let [state (:application/state application)
+           processing-state (get (:application/processing-state application) state)]
+
+     (not processing-state)
+     (localize-state state)
+
+     :let [workflow-processing-states (get-in application [:application/workflow :workflow/processing-states])]
+     (localize-state state (->> workflow-processing-states
+                                (find-first (comp #{processing-state} :value))
+                                :title)))])
+
 (defn- application-state-details [application config]
   [:<>
    [:h3.mt-3 (text :t.applications/details)]
@@ -799,10 +827,9 @@
       (text :t.applications/description)
       (:application/description application)
       {:inline? true}])
-   [info-field
+   [info-field ; TODO: show application stage here?
     (text :t.applications/state)
-    [:span#application-state
-     (localize-state (:application/state application))]
+    [render-application-state application]
     {:inline? true}]
    [info-field
     (text :t.applications/latest-activity)
@@ -1003,7 +1030,8 @@
                                :application.command/delete [delete-action-button]
                                :application.command/copy-as-new [copy-as-new-button]
                                :application.command/redact-attachments (when-some [attachments (seq (filter :attachment/can-redact (:application/attachments application)))]
-                                                                         [redact-attachments-action-button attachments])])]
+                                                                         [redact-attachments-action-button attachments])
+                               :application.command/change-processing-state [change-processing-state-action-button]])]
 
     (-> (for [[command action] (partition 2 commands-and-actions)
               :when (contains? (:application/permissions application) command)]
@@ -1045,7 +1073,8 @@
                   [approve-reject-form app-id reload]
                   [assign-external-id-form app-id reload]
                   [delete-form app-id go-to-applications]
-                  [vote-form app-id application reload]]]}])))
+                  [vote-form app-id application reload]
+                  [change-processing-state-form app-id application reload]]]}])))
 
 (defn- render-resource [resource language]
   (let [config @(rf/subscribe [:rems.config/config])
@@ -1112,10 +1141,10 @@
                                               :default-sort-order :desc}]]}]))
 
 (rf/reg-sub ::duo-form
-            :<- [::edit-application]
-            (fn [edit-application] (:duo-codes edit-application)))
+  :<- [::edit-application]
+  (fn [edit-application] (:duo-codes edit-application)))
 (rf/reg-event-db ::set-duo-form-code
-                 (fn [db [_ keys value]] (assoc-in db (concat [::edit-application :duo-codes] keys) value)))
+  (fn [db [_ keys value]] (assoc-in db (concat [::edit-application :duo-codes] keys) value)))
 
 (defn- find-duo-more-info [duo]
   (for [resource (:application/resources @(rf/subscribe [::application]))
@@ -1128,9 +1157,13 @@
   {:get-form ::duo-form
    :update-form ::set-duo-form-code})
 
-(defn- edit-application-duo-codes []
-  (let [application-duo-matches (-> @(rf/subscribe [::application]) :application/duo :duo/matches)
-        selected-duos (vals @(rf/subscribe [::duo-form]))]
+(defn get-validity [duo-match]
+  (get-in duo-match [:duo/validation :validity]))
+
+(defn- edit-duo-codes [application]
+  (let [application-duo-matches (get-in application [:application/duo :duo/matches])
+        selected-duos (vals @(rf/subscribe [::duo-form]))
+        all-duos @(rf/subscribe [::duo-codes])]
     [collapsible/component
      {:id "duo-codes"
       :title (text :t.duo/title)
@@ -1147,35 +1180,40 @@
                 [:label.administration-field-label {:for "duos-dropdown"} (text :t.duo/title)]
                 [dropdown/dropdown
                  {:id "duos-dropdown"
-                  :items @(rf/subscribe [::duo-codes])
+                  :items all-duos
                   :item-key :id
                   :item-label (fn [{:keys [id shorthand label]}]
                                 (if-not (str/blank? shorthand)
                                   (str shorthand " – " (localized label))
                                   (str id " – " (localized label))))
-                  :item-selected? (fn [duo] (some #(= (:id duo) (:id %)) selected-duos))
+                  :item-selected? (fn [{:keys [id]}]
+                                    (->> selected-duos
+                                         (some #(= id (:id %)))))
                   :multi? true
-                  :on-change #(do (fields/always-on-change %) (rf/dispatch [::set-duo-codes %]))}]]
+                  :on-change #(do
+                                (fields/always-on-change %)
+                                (rf/dispatch [::set-duo-codes %]))}]]
                (doall
                 (for [edit-duo (sort-by :id selected-duos)
                       :let [duo-matches (->> application-duo-matches
-                                             (filter (fn [match] (= (:id edit-duo) (:duo/id match)))))]]
+                                             (filter (fn [match]
+                                                       (= (:id edit-duo) (:duo/id match)))))]]
                   ^{:key (:id edit-duo)}
                   [:div.form-field
                    [duo-field edit-duo {:context duo-context
                                         :on-change fields/always-on-change
-                                        :duo/statuses (map (comp :validity :duo/validation) duo-matches)
+                                        :duo/statuses (map get-validity duo-matches)
                                         :duo/errors (mapcat (comp :errors :duo/validation) duo-matches)
                                         :duo/more-infos (find-duo-more-info edit-duo)}]]))]}]))
 
 (defn- group-duos-by-matches [matches duos]
   (->> matches
-       (remove #(= :duo/not-found (-> % :duo/validation :validity)))
+       (remove #(= :duo/not-found (get-validity %)))
        (build-index {:keys [:duo/id] :collect-fn identity})
        (map (fn [[duo-id matches]]
               {:duo (find-first #(= duo-id (:id %)) duos)
                :matches matches
-               :validity (duo-validation-summary (map #(-> % :duo/validation :validity) matches))}))))
+               :validity (duo-validation-summary (map get-validity matches))}))))
 
 (defn- duo-status-sort-order [status]
   (case status
@@ -1184,16 +1222,16 @@
     :duo/compatible 2
     3))
 
-(defn- application-duo-codes []
-  (let [duo-matches (-> @(rf/subscribe [::application]) :application/duo :duo/matches)
-        duo-codes (-> @(rf/subscribe [::application]) :application/duo :duo/codes)]
+(defn- duo-codes [application]
+  (let [matches (get-in application [:application/duo :duo/matches])
+        duos (get-in application [:application/duo :duo/codes])]
     [collapsible/component
      {:id "duo-codes"
       :title (text :t.duo/title)
-      :always (if (empty? duo-matches)
+      :always (if (empty? matches)
                 [:p (text :t.duo/no-duo-codes)]
                 [:div.form-items.form-group
-                 (when-let [missing-duos (seq (unmatched-duos duo-matches))]
+                 (when-let [missing-duos (seq (unmatched-duos matches))]
                    [:div.alert.alert-danger
                     [:p (text :t.applications.duos.validation/missing-duo-codes)]
                     [:ul
@@ -1201,7 +1239,7 @@
                        ^{:key (str "missing-duo-" (:duo/id duo))}
                        [:li (str (:duo/shorthand duo) " - " (localized (:duo/label duo)))])]])
                  (doall
-                  (for [{:keys [duo matches]} (->> (group-duos-by-matches duo-matches duo-codes)
+                  (for [{:keys [duo matches]} (->> (group-duos-by-matches matches duos)
                                                    (sort-by (comp duo-status-sort-order :validity)))]
                     ^{:key (:id duo)}
                     [duo-info-field {:id (str "duo-info-field-" (:id duo))
@@ -1209,10 +1247,16 @@
                                      :duo/matches matches
                                      :duo/more-infos (find-duo-more-info duo)}]))])}]))
 
-(defn- get-resource-duos [application]
-  (let [duos (->> (:application/resources application)
-                  (mapcat #(get-in % [:resource/duo :duo/codes])))]
-    duos))
+(defn application-duo-codes [application read-only?]
+  (b/cond
+    :let [duos-in-resources (->> application
+                                 :application/resources
+                                 (mapcat #(get-in % [:resource/duo :duo/codes])))]
+    :when (seq duos-in-resources)
+
+    read-only?
+    [duo-codes application]
+    [edit-duo-codes application]))
 
 (defn- disabled-items-warning [application]
   (when-some [resources (->> (:application/resources application)
@@ -1234,22 +1278,19 @@
      [blacklist-warning application])
    (text :t.applications/intro)
    [:div.row
-    [:div.col-lg-8.application-content
+    [:div.application-content.col-lg-8.d-flex.flex-column.gap-6
      [application-state {:application application
                          :config config
                          :userid userid}]
-     [:div.mt-3 [applicants-info application userid]]
+     [applicants-info application userid]
      (when (:show-resources-section config)
-       [:div.mt-3 [applied-resources application userid language]])
-     (when (and (:enable-duo config)
-                (seq (get-resource-duos application)))
-       (if @(rf/subscribe [::readonly?])
-         [:div.mt-3 [application-duo-codes]]
-         [:div.mt-3 [edit-application-duo-codes]]))
+       [applied-resources application userid language])
+     (when (:enable-duo config)
+       [application-duo-codes application])
      (when (can-see-everything? application) ; XXX: should these be shown only to handling users?
-       [:div.mt-3 [previous-applications (get-in application [:application/applicant :userid])]])
-     [:div.my-3 [application-licenses application userid]]
-     [:div.mt-3 [application-fields application]]]
+       [previous-applications (get-in application [:application/applicant :userid])])
+     [application-licenses application userid]
+     [application-fields application]]
     [:div.col-lg-4.spaced-vertically-3
      [:div#actions
       [flash-message/component :actions]

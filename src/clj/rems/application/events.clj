@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [schema-refined.core :as r]
             [schema.core :as s]
+            [rems.common.application-util :as application-util]
             [rems.schema-base :as schema-base]
             [rems.util :refer [assert-ex try-catch-ex]])
   (:import (org.joda.time DateTime)))
@@ -13,11 +14,6 @@
   (assoc schema-base/EventBase
          (s/optional-key :application/comment) s/Str
          (s/optional-key :event/attachments) [EventAttachment]))
-
-(def workflow-types
-  #{:workflow/decider
-    :workflow/default
-    :workflow/master})
 
 (s/defschema AttachmentsRedactedEvent
   (assoc EventWithComment
@@ -57,7 +53,7 @@
          :application/licenses [{:license/id s/Int}]
          :application/forms [{:form/id schema-base/FormId}]
          :workflow/id s/Int
-         :workflow/type (apply s/enum workflow-types)))
+         :workflow/type (apply s/enum application-util/workflow-types)))
 (s/defschema DecidedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/decided)
@@ -129,10 +125,11 @@
          :event/type (s/enum :application.event/member-uninvited)
          :application/member {:name s/Str
                               :email s/Str}))
-(s/defschema ProcessingStageChangedEvent
+(s/defschema ProcessingStateChangedEvent
   (assoc EventWithComment
-         :event/type (s/enum :application.event/processing-stage-changed)
-         :processing-stage/value s/Str))
+         :event/type (s/enum :application.event/processing-state-changed)
+         :event/public s/Bool
+         :processing-state/value s/Str))
 (s/defschema RejectedEvent
   (assoc EventWithComment
          :event/type (s/enum :application.event/rejected)))
@@ -205,7 +202,7 @@
    :application.event/member-joined MemberJoinedEvent
    :application.event/member-removed MemberRemovedEvent
    :application.event/member-uninvited MemberUninvitedEvent
-   :application.event/processing-stage-changed ProcessingStageChangedEvent
+   :application.event/processing-state-changed ProcessingStateChangedEvent
    :application.event/rejected RejectedEvent
    :application.event/remarked RemarkedEvent
    :application.event/resources-changed ResourcesChangedEvent

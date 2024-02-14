@@ -212,7 +212,7 @@
                             (:event/type event)))
                 :let [attachment-ids (map :attachment/id (:event/attachments event))
                       redacted-ids (map :attachment/id (:event/redacted-attachments event))]]
-            [:phrase
+            [:phrase ; TODO: enrich processing states from application to localize-event
              (localize-time (:event/time event)) " " (localize-event event)
              (when-let [decision (localize-decision event)]
                (str "\n" decision))
