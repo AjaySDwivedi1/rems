@@ -32,15 +32,17 @@
       v
       (recur (rest attrs)))))
 
+(defn- get-current-language []
+  (if (bound? #'context/*lang*)
+    context/*lang*
+    (:default-language env)))
+
 (defn- logo-preloads
   "Preload important images so that the paint can happen earlier."
   []
   (for [href (->>
               ;; localized logos or fallbacks
-              (let [lang-key (some-> (if (bound? #'context/*lang*)
-                                       context/*lang*
-                                       (env :default-language))
-                                     name)]
+              (let [lang-key (some-> (get-current-language) name)]
                 [(theme-get (keyword (str "logo-name-" lang-key)) :logo-name)
                  (theme-get (keyword (str "logo-name-sm-" lang-key)) :logo-name-sm)
                  (theme-get (keyword (str "navbar-logo-name-" lang-key)) :navbar-logo-name)])
@@ -50,14 +52,14 @@
               (remove nil?))]
     [:link {:rel "preload" :as "image" :href href :type "image/png"}]))
 
+(defn- get-transit-value [value]
+  (with-open [os (java.io.ByteArrayOutputStream. 4096)]
+    (cognitect.transit/write (cognitect.transit/writer os :json) value)
+    (.toString os "UTF-8")))
+
 (defn- inline-value [setter value]
-  (let [os (java.io.ByteArrayOutputStream. 4096)
-        _ (cognitect.transit/write (cognitect.transit/writer os :json) value)
-        transit-value (.toString os "UTF-8")]
-    [:script {:type "text/javascript"}
-     (format "%s(%s);"
-             setter
-             (pr-str transit-value))]))
+  [:script {:type "text/javascript"}
+   (format "%s(%s);" setter (pr-str (get-transit-value value)))])
 
 (defn- page-template
   [content & [app-content]]

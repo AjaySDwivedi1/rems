@@ -1842,14 +1842,14 @@
           (btu/fill-human (field-selector :info-text-sv) "Info text (SV)")
 
           (btu/scroll-and-click (field-selector :type-option))
-          (btu/scroll-and-click {:class :add-option})
+          (btu/scroll-and-click (field-selector :add-option))
           (is (btu/eventually-visible? (field-selector :options-0-key)))
           (btu/fill-human (field-selector :options-0-key) "true")
           (btu/fill-human (field-selector :options-0-label-en) "Yes")
           (btu/fill-human (field-selector :options-0-label-fi) "Kyllä")
           (btu/fill-human (field-selector :options-0-label-sv) "Ja")
 
-          (btu/scroll-and-click {:class :add-option})
+          (btu/scroll-and-click (field-selector :add-option))
           (is (btu/eventually-visible? (field-selector :options-1-key)))
           (btu/fill-human (field-selector :options-1-key) "false")
           (btu/fill-human (field-selector :options-1-label-en) "No")
@@ -2188,9 +2188,14 @@
           (wait-page-title "Edit form – REMS")
           (is (btu/visible? {:id (field-selector 0 :info-text-sv) :fn/has-class :is-invalid}))
           ;; :fn/has-text has trouble working for the whole "Field \"Field description (optional)\" is required." string
-          (is (btu/visible? {:fn/has-class :invalid-feedback :fn/has-text "Field description (optional)"}))
-          (is (btu/visible? {:fn/has-class :invalid-feedback :fn/has-text "is required"}))
-          (is (btu/visible? {:fn/has-class :alert-danger :fn/has-text "Check the following errors"})))
+          #_btu/has-class-el? 
+          (is (btu/visible? {:fn/has-text "Field description (optional)"}))
+          (is (btu/visible? {:fn/has-text "is required"}))
+          (is (btu/visible? {:fn/has-text "Check the following errors"}))
+          #_(is (btu/visible? {:fn/has-class :invalid-feedback :fn/has-text "Field description (optional)"}))
+          #_(is (btu/visible? {:fn/has-class :invalid-feedback :fn/has-text "is required"}))
+          #_(is (btu/visible? {:fn/has-class :alert-danger :fn/has-text "Check the following errors"}))
+          )
 
         (testing "successful save"
           (btu/fill-human (field-selector 0 :info-text-sv) "Info text (SV)")

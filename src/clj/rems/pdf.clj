@@ -251,7 +251,7 @@
   (pdf (render-application application) out))
 
 (defn application-to-pdf-bytes [application]
-  (let [out (ByteArrayOutputStream.)]
+  (with-open [out (ByteArrayOutputStream.)]
     (application-to-pdf application out)
     (.toByteArray out)))
 

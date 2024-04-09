@@ -2,6 +2,7 @@
   (:require [better-cond.core :as b]
             [clojure.string :as str]
             [clojure.set :refer [union]]
+            [goog.functions :refer [debounce rateLimit]]
             [reagent.core :as r]
             [re-frame.core :as rf]
             [medley.core :refer [find-first update-existing]]
@@ -296,6 +297,28 @@
                 (assoc-in [::edit-application :validation :warnings] nil))})
      {})))
 
+(defn- clear-message []
+  (flash-message/clear-message! :actions-form-flash))
+
+(def ^:private rate-limited-clear-message
+  (rateLimit clear-message 1000))
+
+(defn- notify-activity []
+  (rf/dispatch [::autosave-application]))
+
+(def ^:private debounced-notify-activity
+  (debounce notify-activity 1000))
+
+(defn always-on-change
+  "Triggers autosave related functions.
+
+  Should be called always when something is changed in the application, that doesn't explicitly also save.
+  For example, add member internally also \"saves\" the state, but changing a text field value doesn't."
+  [event-value]
+  (rate-limited-clear-message) ; clear status as soon as possible
+  (debounced-notify-activity) ; try autosave only every second or so
+  event-value)
+
 (rf/reg-event-fx
  ::submit-application
  (fn [{:keys [db]} [_ description]]
@@ -364,7 +387,7 @@
                                                                            (conj current-attachments (:id response)))])
                          (if (:enable-autosave config)
                            (do
-                             (fields/always-on-change (:id response))
+                             (always-on-change (:id response))
                              (rf/dispatch [::set-attachment-status form-id field-id :success]))
                            (rf/dispatch [::save-application description #(rf/dispatch [::set-attachment-status form-id field-id :success])])))
               :error-handler (fn [response]
@@ -390,7 +413,7 @@
 (rf/reg-event-fx
  ::remove-attachment
  (fn [{:keys [db]} [_ form-id field-id attachment-id]]
-   (fields/always-on-change attachment-id)
+   (always-on-change attachment-id)
    {:db (update-in db [::edit-application :field-values form-id field-id]
                    (comp form/unparse-attachment-ids
                          (partial remove #{attachment-id})
@@ -570,38 +593,32 @@
   to limit re-rendering and improve performance."
   [field]
   (let [form-id (:form/id field)
-        field-id (:field/id field)
-        field-value @(rf/subscribe [::get-field-value form-id field-id])
-        attachments-by-ids (fn [ids]
-                             (mapv (fn [id]
-                                     @(rf/subscribe [::get-attachment-by-id id]))
-                                   ids))
         depended-field-id (form/field-depends-on-field field)
         depended-value (when depended-field-id
                          {depended-field-id @(rf/subscribe [::get-field-value form-id depended-field-id])})]
 
     (when (and (form/field-visible? field depended-value)
                (not (:field/private field))) ; private fields will have empty value anyway
-      [fields/field (merge field
-                           {:field/value field-value
-                            :diff @(rf/subscribe [::get-field-diff form-id field-id])
-                            :validation @(rf/subscribe [::get-field-validation form-id field-id])
-                            :on-change #(rf/dispatch [::set-field-value form-id field-id %])
-                            :on-toggle-diff #(rf/dispatch [::toggle-diff form-id field-id])}
-                           (when (= :attachment (:field/type field))
-                             {:field/attachments (->> field-value
-                                                      form/parse-attachment-ids
-                                                      attachments-by-ids
-                                                      ;; The field value can contain an id that's not in attachments when a new attachment has been
-                                                      ;; uploaded, but the application hasn't yet been refetched.
-                                                      (remove nil?))
-                              :field/previous-attachments (when-let [prev (:field/previous-value field)]
-                                                            (->> prev
-                                                                 form/parse-attachment-ids
-                                                                 attachments-by-ids))
-                              :field/attachment-status @(rf/subscribe [::get-field-attachment-status form-id field-id])
-                              :on-attach #(rf/dispatch [::save-attachment form-id field-id %1 %2])
-                              :on-remove-attachment #(rf/dispatch [::remove-attachment form-id field-id %1])}))])))
+      (let [field-id (:field/id field)
+            on-change #(rf/dispatch [::set-field-value form-id field-id %])
+            field-value @(rf/subscribe [::get-field-value form-id field-id])]
+        [fields/field (merge field
+                             {:field/value field-value
+                              :diff @(rf/subscribe [::get-field-diff form-id field-id])
+                              :validation @(rf/subscribe [::get-field-validation form-id field-id])
+                              :on-change (r/partial (comp on-change always-on-change))
+                              :on-toggle-diff #(rf/dispatch [::toggle-diff form-id field-id])}
+                             (when (= :attachment (:field/type field))
+                               (let [get-attachments-by-ids #(for [id (form/parse-attachment-ids %)]
+                                                               @(rf/subscribe [::get-attachment-by-id id]))]
+                                 {;; The field value can contain an id that's not in attachments when a new attachment has been
+                                  ;; uploaded, but the application hasn't yet been refetched.
+                                  :field/attachments (vec (remove nil? (get-attachments-by-ids field-value)))
+                                  :field/previous-attachments (when-let [prev (:field/previous-value field)]
+                                                                (vec (get-attachments-by-ids prev)))
+                                  :field/attachment-status @(rf/subscribe [::get-field-attachment-status form-id field-id])
+                                  :on-attach #(rf/dispatch [::save-attachment form-id field-id %1 %2])
+                                  :on-remove-attachment #(rf/dispatch [::remove-attachment form-id field-id %1])})))]))))
 
 (defn- application-fields [application]
   (let [language @(rf/subscribe [:language])]
@@ -1153,6 +1170,7 @@
 (rf/reg-sub ::duo-form
             :<- [::edit-application]
             (fn [edit-application] (:duo-codes edit-application)))
+(rf/reg-sub ::get-duo-field :<- [::duo-form] (fn [form [_ key-path]] (get-in form key-path)))
 (rf/reg-event-db ::set-duo-form-code
                  (fn [db [_ keys value]] (assoc-in db (concat [::edit-application :duo-codes] keys) value)))
 
@@ -1165,6 +1183,7 @@
 
 (def ^:private duo-context
   {:get-form ::duo-form
+   :get-form-field ::get-duo-field
    :update-form ::set-duo-form-code})
 
 (defn- edit-application-duo-codes []
@@ -1196,7 +1215,7 @@
                   :multi? true
                   :on-change (fn [items]
                                (let [duos (mapv #(dissoc % ::label) items)]
-                                 (fields/always-on-change duos)
+                                 (always-on-change duos)
                                  (rf/dispatch [::set-duo-codes duos])))}]]
                (into [:<>]
                      (for [edit-duo (sort-by :id selected-duos)
@@ -1204,7 +1223,7 @@
                                                   (filter (fn [match] (= (:id edit-duo) (:duo/id match)))))]]
                        [:div.form-field
                         [duo-field edit-duo {:context duo-context
-                                             :on-change fields/always-on-change
+                                             :on-change always-on-change
                                              :duo/statuses (map (comp :validity :duo/validation) duo-matches)
                                              :duo/errors (mapcat (comp :errors :duo/validation) duo-matches)
                                              :duo/more-infos (find-duo-more-info edit-duo)}]]))]}]))

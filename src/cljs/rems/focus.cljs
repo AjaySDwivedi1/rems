@@ -1,6 +1,6 @@
 (ns rems.focus
   "Focuses an HTML element as soon as it exists."
-  (:require [reagent.core :as reagent]
+  (:require [reagent.core :as r]
             [re-frame.core :as rf]))
 
 (defn focus [element]
@@ -22,8 +22,7 @@
    (when (pos? tries)
      (if-let [element (.querySelector js/document selector)]
        (f element)
-       (js/setTimeout #(on-element-appear selector f (dec tries))
-                      10)))))
+       (r/after-render #(on-element-appear selector f (dec tries)))))))
 
 (defn- scroll-below-navigation-menu
   "Scrolls an element into view if it's behind the navigation menu."
@@ -69,6 +68,6 @@
       (on-element-appear #(.scrollIntoView % (clj->js (or opts {}))))))
 
 (rf/reg-fx :rems.focus/scroll-into-view (fn [[selector opts]]
-                                          (reagent/after-render #(scroll-into-view selector opts))))
+                                          (r/after-render #(scroll-into-view selector opts))))
 (rf/reg-event-fx :rems.focus/scroll-into-view (fn [_ [_ selector opts]]
                                                 {:rems.focus/scroll-into-view [selector opts]}))

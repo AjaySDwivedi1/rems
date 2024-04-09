@@ -11,23 +11,26 @@
   `data-field-index` property for this. When a field is e.g. moved, it takes a while for
   React to re-render it. So we want to wait until the element is rendered to the new place
   with the new index before we can scroll to the new position."
-  (:require [clojure.string :as str]
-            [medley.core :refer [find-first]]
+  (:require [better-cond.core :as b]
+            [clojure.string :as str]
+            [medley.core :refer [find-first indexed]]
             [re-frame.core :as rf]
+            [reagent.core :as r]
+            [reagent.ratom :as ra]
             [rems.administration.administration :as administration]
             [rems.administration.components :refer [checkbox localized-text-field organization-field radio-button-group text-field text-field-inline]]
             [rems.administration.items :as items]
             [rems.atoms :as atoms :refer [document-title]]
             [rems.collapsible :as collapsible]
             [rems.common.form :refer [field-visible? generate-field-id validate-form-template] :as common-form]
-            [rems.common.util :refer [parse-int]]
+            [rems.common.util :refer [not-blank parse-int]]
             [rems.dropdown :as dropdown]
             [rems.fetcher :as fetcher]
             [rems.fields :as fields]
             [rems.flash-message :as flash-message]
             [rems.focus :as focus]
             [rems.spinner :as spinner]
-            [rems.text :refer [text text-format]]
+            [rems.text :refer [localized text text-format]]
             [rems.util :refer [navigate! put! post! trim-when-string visibility-ratio focus-input-field]]))
 
 (rf/reg-event-fx
@@ -36,6 +39,7 @@
    {:db (assoc db
                ::form nil
                ::form-errors nil
+               ::preview nil
                ::form-id form-id
                ::edit-form? edit-form?)
     :dispatch-n [(when form-id [::form])]}))
@@ -44,113 +48,97 @@
 
 ;;;; form state
 
-(defn- field-editor-id [id]
-  (str "field-editor-" id))
-
-(defn- field-editor-selector [id index]
-  (str "#" (field-editor-id id) "[data-field-index='" index "']"))
-
-(defn- track-moved-field-editor! [id index button-selector]
-  (when-some [element (js/document.getElementById (field-editor-id id))]
-    (let [before (.getBoundingClientRect element)]
-      ;; NB: the element exists already but we wait for it to reappear with the new index
-      (focus/on-element-appear (field-editor-selector id index)
-                               (fn [element]
-                                 (let [after (.getBoundingClientRect element)]
-                                   (focus/scroll-offset before after)
-                                   (focus/focus-without-scroll (.querySelector element button-selector))))))))
-
-(defn- focus-field-editor! [id]
-  (let [selector "textarea"] ;; focus first title field
-    (focus/on-element-appear (str "#" (field-editor-id id))
-                             (fn [element]
-                               (focus/scroll-to-top element)
-                               (collapsible/open-component (field-editor-id id))
-                               (.focus (.querySelector element selector))))))
-
-(defn- assign-field-index [form]
-  (update form :form/fields #(vec (map-indexed (fn [i field] (assoc field :field/index i)) %))))
-
-(rf/reg-sub ::form-data (fn [db] (assign-field-index (get-in db [::form :data]))))
-(rf/reg-sub ::form-errors (fn [db _] (::form-errors db)))
 (rf/reg-sub ::edit-form? (fn [db _] (::edit-form? db)))
-(rf/reg-event-db ::set-form-field (fn [db [_ keys value]] (assoc-in db (concat [::form :data] keys) value)))
+(rf/reg-sub ::form-errors (fn [db _] (::form-errors db)))
+(rf/reg-sub ::form-data (fn [db] (get-in db [::form :data])))
+(rf/reg-sub ::fields (fn [db] (vec (get-in db [::form :data :form/fields] []))))
+(rf/reg-sub ::find-field-by-id
+            :<- [::fields]
+            (fn [fields [_ id]]
+              (->> (indexed fields)
+                   (find-first (comp #{id} :field/id second)))))
 
-(rf/reg-event-db
+(defn- field-editor-id [id] (str "field-editor-" id))
+
+(rf/reg-fx
+ ::focus-field-editor
+ (fn [field-id]
+   (let [editor-id (field-editor-id field-id)]
+     (focus/on-element-appear (str "#" editor-id)
+                              (fn [element]
+                                (focus/scroll-to-top element)
+                                (collapsible/open-component editor-id)
+                                (r/after-render #(.focus (.querySelector element "textarea"))))))))
+
+(rf/reg-event-fx
  ::add-form-field
- (fn [db [_ & [index]]]
-   (let [new-item (merge (generate-field-id (get-in db [::form :data :form/fields]))
-                         {:field/type :text})]
-     (focus-field-editor! (:field/id new-item))
-     (update-in db [::form :data :form/fields] items/add new-item index))))
+ (fn [{:keys [db]} [_ & [index]]]
+   (let [new-item (-> db
+                      (get-in [::form :data :form/fields])
+                      generate-field-id
+                      (merge {:field/type :text}))]
+     {:db (update-in db [::form :data :form/fields] items/add new-item index)
+      ::focus-field-editor (:field/id new-item)})))
 
 (rf/reg-event-db
  ::remove-form-field
  (fn [db [_ field-index]]
    (update-in db [::form :data :form/fields] items/remove field-index)))
 
-(rf/reg-event-db
+(rf/reg-fx ::track-moved-field-editor
+           (fn [[field-id index button-selector]]
+             (r/after-render
+              #(when-some [element (js/document.getElementById (field-editor-id field-id))]
+                 (let [before (.getBoundingClientRect element)]
+                   ;; NB: the element exists already but we wait for it to reappear with the new index
+                   (focus/on-element-appear (str "#" (field-editor-id field-id) "[data-field-index='" index "']")
+                                            (fn [element]
+                                              (let [after (.getBoundingClientRect element)]
+                                                (focus/scroll-offset before after)
+                                                (focus/focus-without-scroll (.querySelector element button-selector))))))))))
+
+(rf/reg-event-fx
  ::move-form-field-up
- (fn [db [_ field-index]]
-   (track-moved-field-editor! (get-in db [::form :data :form/fields field-index :field/id])
-                              (dec field-index)
-                              ".move-up")
-   (update-in db [::form :data :form/fields] items/move-up field-index)))
+ (fn [{:keys [db]} [_ field-index]]
+   (let [field-id (get-in db [::form :data :form/fields field-index :field/id])]
+     {:db (update-in db
+                     [::form :data :form/fields]
+                     items/move-up
+                     field-index)
+      ::track-moved-field-editor [field-id (dec field-index) ".move-up"]})))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  ::move-form-field-down
- (fn [db [_ field-index]]
-   (track-moved-field-editor! (get-in db [::form :data :form/fields field-index :field/id])
-                              (inc field-index)
-                              ".move-down")
-   (update-in db [::form :data :form/fields] items/move-down field-index)))
+ (fn [{:keys [db]} [_ field-index]]
+   (let [field-id (get-in db [::form :data :form/fields field-index :field/id])]
+     {:db (update-in db
+                     [::form :data :form/fields]
+                     items/move-down
+                     field-index)
+      ::track-moved-field-editor [field-id (inc field-index) ".move-down"]})))
 
-(rf/reg-event-db
- ::add-form-field-option
- (fn [db [_ field-index]]
-   (update-in db [::form :data :form/fields field-index :field/options] items/add {})))
+(defn- add-item [k db [_ field-index]]
+  (update-in db [::form :data :form/fields field-index k] items/add {}))
 
-(rf/reg-event-db
- ::remove-form-field-option
- (fn [db [_ field-index option-index]]
-   (update-in db [::form :data :form/fields field-index :field/options] items/remove option-index)))
+(defn- remove-item [k db [_ field-index item-index]]
+  (update-in db [::form :data :form/fields field-index k] items/remove item-index))
 
-(rf/reg-event-db
- ::move-form-field-option-up
- (fn [db [_ field-index option-index]]
-   (update-in db [::form :data :form/fields field-index :field/options] items/move-up option-index)))
+(defn- move-item [k direction db [_ field-index item-index]]
+  (case direction
+    :up (update-in db [::form :data :form/fields field-index k] items/move-up item-index)
+    :down (update-in db [::form :data :form/fields field-index k] items/move-down item-index)))
 
-(rf/reg-event-db
- ::move-form-field-option-down
- (fn [db [_ field-index option-index]]
-   (update-in db [::form :data :form/fields field-index :field/options] items/move-down option-index)))
+(rf/reg-event-db ::add-option (partial add-item :field/options))
+(rf/reg-event-db ::remove-option (partial remove-item :field/options))
+(rf/reg-event-db ::move-option-up (partial move-item :field/options :up))
+(rf/reg-event-db ::move-option-down (partial move-item :field/options :down))
 
-;; TODO column code is an exact duplication of option code
-
-(rf/reg-event-db
- ::add-form-field-column
- (fn [db [_ field-index]]
-   (update-in db [::form :data :form/fields field-index :field/columns] items/add {})))
-
-(rf/reg-event-db
- ::remove-form-field-column
- (fn [db [_ field-index column-index]]
-   (update-in db [::form :data :form/fields field-index :field/columns] items/remove column-index)))
-
-(rf/reg-event-db
- ::move-form-field-column-up
- (fn [db [_ field-index column-index]]
-   (update-in db [::form :data :form/fields field-index :field/columns] items/move-up column-index)))
-
-(rf/reg-event-db
- ::move-form-field-column-down
- (fn [db [_ field-index column-index]]
-   (update-in db [::form :data :form/fields field-index :field/columns] items/move-down column-index)))
+(rf/reg-event-db ::add-column (partial add-item :field/columns))
+(rf/reg-event-db ::remove-column (partial remove-item :field/columns))
+(rf/reg-event-db ::move-column-up (partial move-item :field/columns :up))
+(rf/reg-event-db ::move-column-down (partial move-item :field/columns :down))
 
 ;;;; form submit
-
-(defn- localized-field-title [field lang]
-  (get-in field [:field/title lang]))
 
 (defn build-localized-string [lstr languages]
   (let [v (into {} (for [language languages]
@@ -159,35 +147,43 @@
       v)))
 
 (defn build-request-field [field languages]
-  (merge {:field/id (:field/id field)
-          :field/title (build-localized-string (:field/title field) languages)
-          :field/type (:field/type field)
-          :field/optional (if (common-form/supports-optional? field)
-                            (boolean (:field/optional field))
-                            false)}
-         (when (common-form/supports-info-text? field)
-           (when-let [v (build-localized-string (:field/info-text field) languages)]
-             {:field/info-text v}))
-         (when (common-form/supports-placeholder? field)
-           (when-let [v (build-localized-string (:field/placeholder field) languages)]
-             {:field/placeholder v}))
-         (when (common-form/supports-max-length? field)
-           {:field/max-length (parse-int (:field/max-length field))})
-         (when (common-form/supports-options? field)
-           {:field/options (for [{:keys [key label]} (:field/options field)]
-                             {:key key
-                              :label (build-localized-string label languages)})})
-         (when (common-form/supports-columns? field)
-           {:field/columns (for [{:keys [key label]} (:field/columns field)]
-                             {:key key
-                              :label (build-localized-string label languages)})})
-         (when (common-form/supports-privacy? field)
-           (when (= :private (get-in field [:field/privacy]))
-             {:field/privacy (:field/privacy field)}))
-         (when (common-form/supports-visibility? field)
-           (when (= :only-if (get-in field [:field/visibility :visibility/type]))
-             {:field/visibility (select-keys (:field/visibility field)
-                                             [:visibility/type :visibility/field :visibility/values])}))))
+  (let [columns? (common-form/supports-columns? field)
+        info-text? (common-form/supports-info-text? field)
+        max-length? (common-form/supports-max-length? field)
+        optional? (common-form/supports-optional? field)
+        options? (common-form/supports-options? field)
+        placeholder? (common-form/supports-placeholder? field)
+        privacy? (common-form/supports-privacy? field)
+        visibility? (common-form/supports-visibility? field)]
+    (merge {:field/id (:field/id field)
+            :field/title (build-localized-string (:field/title field) languages)
+            :field/type (:field/type field)
+            :field/optional (if optional?
+                              (boolean (:field/optional field))
+                              false)}
+           (when info-text?
+             (when-let [v (build-localized-string (:field/info-text field) languages)]
+               {:field/info-text v}))
+           (when placeholder?
+             (when-let [v (build-localized-string (:field/placeholder field) languages)]
+               {:field/placeholder v}))
+           (when max-length?
+             {:field/max-length (parse-int (:field/max-length field))})
+           (when options?
+             {:field/options (for [{:keys [key label]} (:field/options field)]
+                               {:key key
+                                :label (build-localized-string label languages)})})
+           (when columns?
+             {:field/columns (for [{:keys [key label]} (:field/columns field)]
+                               {:key key
+                                :label (build-localized-string label languages)})})
+           (when privacy?
+             (when (= :private (get-in field [:field/privacy]))
+               {:field/privacy (:field/privacy field)}))
+           (when visibility?
+             (when (= :only-if (get-in field [:field/visibility :visibility/type]))
+               {:field/visibility (select-keys (:field/visibility field)
+                                               [:visibility/type :visibility/field :visibility/values])})))))
 
 (defn build-request [form languages]
   {:organization {:organization/id (get-in form [:organization :organization/id])}
@@ -197,154 +193,157 @@
 
 ;;;; form validation
 
-(defn- page-title [edit-form?]
-  (if edit-form?
-    (text :t.administration/edit-form)
-    (text :t.administration/create-form)))
+(rf/reg-event-fx
+ ::create-form
+ (fn [{:keys [db]} _]
+   (let [request (build-request (get-in db [::form :data]) (:languages db))
+         form-errors (validate-form-template request (:languages db))]
+     (when-not form-errors
+       (post! "/api/forms/create"
+              {:params request
+               :handler (flash-message/default-success-handler :top
+                                                               [text :t.administration/create-form]
+                                                               #(navigate! (str "/administration/forms/" (:id %))))
+               :error-handler (flash-message/default-error-handler :top
+                                                                   [text :t.administration/create-form])}))
+     {:db (assoc db ::form-errors form-errors)})))
 
 (rf/reg-event-fx
- ::send-form
- (fn [{:keys [db]} [_]]
-   (let [edit? (::edit-form? db)
-         request (build-request (get-in db [::form :data]) (:languages db))
-         form-errors (validate-form-template request (:languages db))
-         send-verb (if edit? put! post!)
-         send-url (str "/api/forms/" (if edit?
-                                       "edit"
-                                       "create"))
-         description [page-title edit?]
-         request (merge request
-                        (when edit?
-                          {:form/id (::form-id db)}))]
+ ::edit-form
+ (fn [{:keys [db]} _]
+   (let [request (build-request (get-in db [::form :data]) (:languages db))
+         form-errors (validate-form-template request (:languages db))]
      (when-not form-errors
-       (send-verb send-url
-                  {:params request
-                   :handler (flash-message/default-success-handler
-                             :top
-                             description
-                             (fn [response]
-                               (navigate! (str "/administration/forms/"
-                                               (if edit?
-                                                 (::form-id db)
-                                                 (response :id))))))
-                   :error-handler (flash-message/default-error-handler :top description)}))
+       (put! "/api/forms/edit"
+             {:params (assoc request :form/id (::form-id db))
+              :handler (flash-message/default-success-handler :top
+                                                              [text :t.administration/edit-form]
+                                                              #(navigate! (str "/administration/forms/" (::form-id db))))
+              :error-handler (flash-message/default-error-handler :top
+                                                                  [text :t.administration/edit-form])}))
      {:db (assoc db ::form-errors form-errors)})))
 
 ;;;; preview auto-scrolling
 
 (defn true-height [element]
-  (let [style (.getComputedStyle js/window element)]
+  (let [style (-> js/window
+                  (.getComputedStyle element))]
     (+ (.-offsetHeight element)
-       (js/parseInt (.-marginTop style))
-       (js/parseInt (.-marginBottom style)))))
+       (parse-int (.-marginTop style))
+       (parse-int (.-marginBottom style)))))
 
 (defn set-visibility-ratio [frame element ratio]
   (when (and frame element)
     (let [element-top (- (.-offsetTop element) (.-offsetTop frame))
           element-height (true-height element)
           top-margin (/ (.-offsetHeight frame) 4)
-          position (+ element-top element-height (* -1 ratio element-height) (- top-margin))]
-      (.scrollTo frame 0 position))))
+          position (+ element-top
+                      element-height
+                      (* -1 ratio element-height)
+                      (- top-margin))]
+      (-> frame
+          (.scrollTo 0 position)))))
 
 (defn first-partially-visible-edit-field []
-  (let [fields (array-seq (.querySelectorAll js/document "#create-form .form-field:not(.new-form-field)"))
-        visibility? #(<= 0 (-> % .getBoundingClientRect .-bottom))]
-    (first (filter visibility? fields))))
+  (let [fields (-> js/document
+                   (.querySelectorAll "#create-form .form-field:not(.new-form-field)")
+                   array-seq)
+        is-visible? (fn [^js elem]
+                      (<= 0 (-> elem .getBoundingClientRect .-bottom)))]
+    (->> fields
+         (find-first is-visible?))))
 
 (defn autoscroll []
-  (when-let [edit-field (first-partially-visible-edit-field)]
-    (let [id (last (str/split (.-id edit-field) #"-"))
-          preview-frame (.querySelector js/document "#preview-form-contents")
-          preview-field (-> js/document
-                            (.getElementById (str "field-preview-" id)))
-          ratio (visibility-ratio edit-field)]
-      (set-visibility-ratio preview-frame preview-field ratio))))
+  (b/when-some [edit-field (first-partially-visible-edit-field)
+                id (last (str/split (.-id edit-field) #"-"))
+                preview-frame (.querySelector js/document "#preview-form-contents")
+                preview-field (-> js/document
+                                  (.getElementById (str "field-preview-" id)))
+                ratio (visibility-ratio edit-field)]
+    (r/after-render
+     #(set-visibility-ratio preview-frame
+                            preview-field
+                            ratio))))
 
-(defn enable-autoscroll! []
-  (set! (.-onscroll js/window) autoscroll))
+(def ^:private use-autoscroll
+  "Hook-like helper that attaches autoscroll event listener on component mount,
+   and removes it on unmount."
+  (ra/make-reaction #(.addEventListener js/window "scroll" autoscroll)
+                    {:on-dispose #(.removeEventListener js/window "scroll" autoscroll)}))
 
 ;;;; UI
 
+(rf/reg-sub ::get-form :<- [::form-data] (fn [form [_ key-path]] (get-in form key-path)))
+(rf/reg-sub ::get-form-error :<- [::form-errors] (fn [errors [_ key-path]] (get-in errors key-path)))
+(rf/reg-event-db ::update-form (fn [db [_ keys value]] (assoc-in db (concat [::form :data] keys) value)))
+
 (def ^:private context
-  {:get-form ::form-data
-   :get-form-errors ::form-errors
-   :update-form ::set-form-field})
+  {:get-form ::get-form
+   :get-form-error ::get-form-error
+   :update-form ::update-form})
 
 (defn- form-organization-field []
   [organization-field context {:keys [:organization]}])
 
 (defn- form-internal-name-field []
   [text-field context {:keys [:form/internal-name]
-                       :label (text :t.administration/internal-name)}])
+                       :label [text :t.administration/internal-name]}])
 
 (defn- form-external-title-field []
   [localized-text-field context {:keys [:form/external-title]
-                                 :label (text :t.administration/external-title)}])
+                                 :label [text :t.administration/external-title]}])
 
 (defn- form-field-id-field [field-index]
   [text-field-inline context {:keys [:form/fields field-index :field/id]
-                              :label (text :t.create-form/field-id)}])
+                              :label [text :t.create-form/field-id]}])
 
 (defn- form-field-title-field [field-index]
   [localized-text-field context {:keys [:form/fields field-index :field/title]
-                                 :label (text :t.create-form/field-title)}])
+                                 :label [text :t.create-form/field-title]}])
 
 (defn- form-field-placeholder-field [field-index]
   [localized-text-field context {:keys [:form/fields field-index :field/placeholder]
                                  :collapse? true
-                                 :label (text :t.create-form/placeholder)}])
+                                 :label [text :t.create-form/placeholder]}])
 
 (defn- form-field-info-text [field-index]
   [localized-text-field context {:keys [:form/fields field-index :field/info-text]
                                  :collapse? true
-                                 :label (text :t.create-form/info-text)}])
+                                 :label [text :t.create-form/info-text]}])
 
 (defn- form-field-max-length-field [field-index]
   [text-field-inline context {:keys [:form/fields field-index :field/max-length]
-                              :label (text :t.create-form/maxlength)}])
-
-(defn- add-form-field-option-button [field-index]
-  [:a.add-option {:href "#"
-                  :id (str "fields-" field-index "-add-option")
-                  :on-click (fn [event]
-                              (.preventDefault event)
-                              (rf/dispatch [::add-form-field-option field-index]))}
-   [atoms/add-symbol] " " (text :t.create-form/add-option)])
-
-(defn- remove-form-field-option-button [field-index option-index]
-  [items/remove-button #(rf/dispatch [::remove-form-field-option field-index option-index])])
-
-(defn- move-form-field-option-up-button [field-index option-index]
-  [items/move-up-button
-   {:on-click #(rf/dispatch [::move-form-field-option-up field-index option-index])
-    :class (str "fields-" field-index "-option-" option-index)}])
-
-(defn- move-form-field-option-down-button [field-index option-index]
-  [items/move-down-button
-   {:on-click #(rf/dispatch [::move-form-field-option-down field-index option-index])
-    :class (str "fields-" field-index "-option-" option-index)}])
+                              :label [text :t.create-form/maxlength]}])
 
 (defn- form-field-option-field [field-index option-index]
   [:div.form-field-option
+
    [:div.form-field-header
     [:h4 (text-format :t.create-form/option-n (inc option-index))]
     [:div.form-field-controls
-     [move-form-field-option-up-button field-index option-index]
-     [move-form-field-option-down-button field-index option-index]
-     [remove-form-field-option-button field-index option-index]]]
+     [items/move-up-button {:on-click #(rf/dispatch [::move-option-up field-index option-index])
+                            :class (str "fields-" field-index "-option-" option-index)}]
+     [items/move-down-button {:on-click #(rf/dispatch [::move-option-down field-index option-index])
+                              :class (str "fields-" field-index "-option-" option-index)}]
+     [items/remove-button #(rf/dispatch [::remove-option field-index option-index])]]]
+
    [text-field-inline context {:keys [:form/fields field-index :field/options option-index :key]
-                               :label (text :t.create-form/option-key)
+                               :label [text :t.create-form/option-key]
                                :normalizer common-form/normalize-option-key}]
    [localized-text-field context {:keys [:form/fields field-index :field/options option-index :label]
-                                  :label (text :t.create-form/option-label)}]])
+                                  :label [text :t.create-form/option-label]}]])
 
 (defn- form-field-option-fields [field-index]
-  (let [form @(rf/subscribe [::form-data])]
-    (into (into [:div]
-                (for [option-index (range (count (get-in form [:form/fields field-index :field/options])))]
-                  [form-field-option-field field-index option-index]))
-          [[:div.form-field-option.new-form-field-option
-            [add-form-field-option-button field-index]]])))
+  (let [options @(rf/subscribe [::get-form [:form/fields field-index :field/options]])]
+    [:div
+     (into [:<>] (for [option-index (range (count options))]
+                   [form-field-option-field field-index option-index]))
+     [:div.form-field-option.new-form-field-option
+      [atoms/action-link {:class "add-option"
+                          :id (str "fields-" field-index "-add-option")
+                          :label [:<>
+                                  [atoms/add-symbol] " " [text :t.create-form/add-option]]
+                          :on-click #(rf/dispatch [::add-option field-index])}]]]))
 
 ;; TODO column code is an exact duplication of option code
 ;; TODO column code reuses some option styles
@@ -354,56 +353,51 @@
                   :id (str "fields-" field-index "-add-column")
                   :on-click (fn [event]
                               (.preventDefault event)
-                              (rf/dispatch [::add-form-field-column field-index]))}
-   (text :t.create-form/add-column)])
+                              (rf/dispatch [::add-column field-index]))}
+   [text :t.create-form/add-column]])
 
 (defn- remove-form-field-column-button [field-index column-index]
-  [items/remove-button #(rf/dispatch [::remove-form-field-column field-index column-index])])
+  [items/remove-button #(rf/dispatch [::remove-column field-index column-index])])
 
 (defn- move-form-field-column-up-button [field-index column-index]
   [items/move-up-button
-   {:on-click #(rf/dispatch [::move-form-field-column-up field-index column-index])}])
+   {:on-click #(rf/dispatch [::move-column-up field-index column-index])}])
 
 (defn- move-form-field-column-down-button [field-index column-index]
   [items/move-down-button
-   {:on-click #(rf/dispatch [::move-form-field-column-down field-index column-index])}])
+   {:on-click #(rf/dispatch [::move-column-down field-index column-index])}])
 
 (defn- form-field-column-field [field-index column-index]
   [:div.form-field-option
    [:div.form-field-header
-    [:h4 (text-format :t.create-form/column-n (inc column-index))]
+    [:h4
+     [text-format :t.create-form/column-n (inc column-index)]]
     [:div.form-field-controls
      [move-form-field-column-up-button field-index column-index]
      [move-form-field-column-down-button field-index column-index]
      [remove-form-field-column-button field-index column-index]]]
    [text-field-inline context {:keys [:form/fields field-index :field/columns column-index :key]
-                               :label (text :t.create-form/column-key)
+                               :label [text :t.create-form/column-key]
                                :normalizer common-form/normalize-option-key}]
    [localized-text-field context {:keys [:form/fields field-index :field/columns column-index :label]
-                                  :label (text :t.create-form/column-label)}]])
+                                  :label [text :t.create-form/column-label]}]])
 
 (defn- form-field-column-fields [field-index]
-  (let [form @(rf/subscribe [::form-data])]
-    (into [:div {:id (str "fields-" field-index "-columns")}]
-          (concat
-           (for [column-index (range (count (get-in form [:form/fields field-index :field/columns])))]
-             [form-field-column-field field-index column-index])
-           [[:div.form-field-option.new-form-field-option
-             [add-form-field-column-button field-index]]]))))
+  (let [columns @(rf/subscribe [::get-form [:form/fields field-index :field/columns]])]
+    [:div {:id (str "fields-" field-index "-columns")}
+     (into [:<>]
+           (for [column-index (range (count columns))]
+             [form-field-column-field field-index column-index]))
+     [:div.form-field-option.new-form-field-option
+      [add-form-field-column-button field-index]]]))
 
-(defn- form-fields-that-can-be-used-in-visibility [form]
-  (filter #(contains? #{:option :multiselect} (:field/type %))
-          (:form/fields form)))
+(defn- can-select-visibility? [field]
+  (contains? #{:option :multiselect} (:field/type field)))
 
-(defn- form-field-values [form field-id]
-  (let [field (find-first (comp #{field-id} :field/id) (:form/fields form))]
-    (case (:field/type field)
-      (:option :multiselect)
-      (let [options (:field/options field)]
-        (map (fn [o] {:value (:key o)
-                      :title (:label o)})
-             options))
-      [])))
+(rf/reg-sub ::visibility-form-fields
+            :<- [::fields]
+            (fn [form-fields]
+              (filterv can-select-visibility? form-fields)))
 
 (rf/reg-event-db
  ::form-field-visibility-type
@@ -423,23 +417,25 @@
 (defn- form-field-visibility
   "Component for specifying form field visibility rules"
   [field-index]
-  (let [form @(rf/subscribe [::form-data])
-        form-errors @(rf/subscribe [::form-errors])
-        error-type (get-in form-errors [:form/fields field-index :field/visibility :visibility/type])
-        error-field (get-in form-errors [:form/fields field-index :field/visibility :visibility/field])
-        error-value (get-in form-errors [:form/fields field-index :field/visibility :visibility/values])
-        lang @(rf/subscribe [:language])
+  (let [error @(rf/subscribe [::get-form-error [:form/fields field-index :field/visibility]])
+        error-type (:visibility/type error)
+        error-field (:visibility/field error)
+        error-value (:visibility/values error)
+
         id-type (str "fields-" field-index "-visibility-type")
         id-field (str "fields-" field-index "-visibility-field")
         id-value (str "fields-" field-index "-visibility-value")
+
         label-type (text :t.create-form/type-visibility)
         label-field (text :t.create-form.visibility/field)
         label-value (text :t.create-form.visibility/has-value)
-        visibility (get-in form [:form/fields field-index :field/visibility])
+
+        visibility @(rf/subscribe [::get-form [:form/fields field-index :field/visibility]])
         visibility-type (:visibility/type visibility)
         visibility-field (:visibility/field visibility)
         visibility-value (:visibility/values visibility)]
-    [:div {:class (when (= :only-if visibility-type) "form-field-visibility")}
+    [:div {:class (when (= :only-if visibility-type)
+                    "form-field-visibility")}
      [:div.form-group.field.row {:id (str "container-field" field-index)}
       [:label.col-sm-3.col-form-label {:for id-type} label-type]
       [:div.col-sm-9
@@ -451,7 +447,7 @@
         [:option {:value "always"} (text :t.create-form.visibility/always)]
         [:option {:value "only-if"} (text :t.create-form.visibility/only-if)]]
        [:div.invalid-feedback
-        (when error-type (text-format error-type label-type))]]]
+        (some-> error-type (text-format label-type))]]]
      (when (= :only-if visibility-type)
        [:<>
         [:div.form-group.field.row
@@ -462,106 +458,92 @@
             :class (when error-field "is-invalid")
             :on-change #(rf/dispatch [::form-field-visibility-field field-index {:field/id (.. % -target -value)}])
             :value (or (:field/id visibility-field) "")}
-           ^{:key "not-selected"} [:option ""]
-           (doall
-            (for [field (form-fields-that-can-be-used-in-visibility form)]
-              ^{:key (str field-index "-" (:field/id field))}
-              [:option {:value (:field/id field)}
-               (text-format :t.create-form/field-n (inc (:field/index field)) (localized-field-title field lang))]))]
+           (into [:<>
+                  [:option ""]]
+                 (for [field @(rf/subscribe [::visibility-form-fields])
+                       :let [index (first @(rf/subscribe [::find-field-by-id (:field/id field)]))]]
+                   [:option {:value (:field/id field)}
+                    (text-format :t.create-form/field-n
+                                 (inc index)
+                                 (localized (:field/title field)))]))]
           [:div.invalid-feedback
-           (when error-field (text-format error-field label-field))]]]
-        (when (:field/id visibility-field)
+           (some-> error-field (text-format label-field))]]]
+        (when-let [visibility-field-id (:field/id visibility-field)]
           [:div.form-group.field.row
            [:label.col-sm-3.col-form-label {:for id-value} label-value]
            [:div.col-sm-9
             [dropdown/dropdown
              {:id id-value
-              :items (for [value (form-field-values form (:field/id visibility-field))]
-                       {:value (:value value)
-                        :label (get-in value [:title lang])})
+              :items (vec (for [option (-> @(rf/subscribe [::find-field-by-id visibility-field-id])
+                                           second
+                                           :field/options)]
+                            {:value (:key option)
+                             ::label (localized (:label option))}))
               :item-key #(str field-index "-" %)
-              :item-label :label
+              :item-label ::label
               :item-selected? #(contains? (set visibility-value) (:value %))
               :multi? true
               :clearable? true
               :on-change #(rf/dispatch [::form-field-visibility-values field-index (mapv :value %)])}]
             [:div.invalid-feedback
-             (when error-value (text-format error-value label-value))]]])])]))
-
-(rf/reg-event-db
- ::form-field-privacy
- (fn [db [_ field-index privacy]]
-   (assoc-in db [::form :data :form/fields field-index :field/privacy] privacy)))
+             (some-> error-value (text-format label-value))]]])])]))
 
 (defn- form-field-privacy
   "Component for specifying form field privacy rules.
 
   Privacy concerns the reviewers as they can see only public fields."
   [field-index]
-  (let [form @(rf/subscribe [::form-data])
-        form-errors @(rf/subscribe [::form-errors])
-        error (get-in form-errors [:form/fields field-index :field/privacy])
-        lang @(rf/subscribe [:language])
-        id (str "fields-" field-index "-privacy-type")
-        label (text :t.create-form/type-privacy)
-        privacy (get-in form [:form/fields field-index :field/privacy])]
+  (let [privacy @(rf/subscribe [::get-form [:form/fields field-index :field/privacy]])
+        error @(rf/subscribe [::get-form-error [:form/fields field-index :field/privacy]])
+        id (str "fields-" field-index "-privacy-type")]
     [:div.form-group.field.row {:id (str "container-field" field-index)}
-     [:label.col-sm-2.col-form-label {:for id} label]
+     [:label.col-sm-2.col-form-label {:for id}
+      [text :t.create-form/type-privacy]]
      [:div.col-sm-10
       [:select.form-control
        {:id id
         :class (when error "is-invalid")
-        :on-change #(rf/dispatch [::form-field-privacy field-index (keyword (.. % -target -value))])
+        :on-change #(let [new-value (keyword (.. % -target -value))]
+                      (rf/dispatch [::set-form-field [:form/fields field-index :field/privacy] new-value]))
         :value (or privacy "public")}
        [:option {:value "public"} (text :t.create-form.privacy/public)]
        [:option {:value "private"} (text :t.create-form.privacy/private)]]]]))
 
 (defn- form-field-type-radio-group [field-index]
-  [radio-button-group context {:id (str "radio-group-" field-index)
-                               :keys [:form/fields field-index :field/type]
-                               :label (text :t.create-form/field-type)
-                               :orientation :horizontal
-                               :options [{:value :description :label (text :t.create-form/type-description)}
-                                         {:value :text :label (text :t.create-form/type-text)}
-                                         {:value :texta :label (text :t.create-form/type-texta)}
-                                         {:value :option :label (text :t.create-form/type-option)}
-                                         {:value :multiselect :label (text :t.create-form/type-multiselect)}
-                                         {:value :table :label (text :t.create-form/type-table)}
-                                         {:value :date :label (text :t.create-form/type-date)}
-                                         {:value :email :label (text :t.create-form/type-email)}
-                                         {:value :phone-number :label (text :t.create-form/type-phone-number)}
-                                         {:value :ip-address :label (text :t.create-form/type-ip-address)}
-                                         {:value :attachment :label (text :t.create-form/type-attachment)}
-                                         {:value :label :label (text :t.create-form/type-label)}
-                                         {:value :header :label (text :t.create-form/type-header)}]}])
+  [radio-button-group context
+   {:id (str "radio-group-" field-index)
+    :keys [:form/fields field-index :field/type]
+    :label [text :t.create-form/field-type]
+    :orientation :horizontal
+    :options [{:value :description :label [text :t.create-form/type-description]}
+              {:value :text :label [text :t.create-form/type-text]}
+              {:value :texta :label [text :t.create-form/type-texta]}
+              {:value :option :label [text :t.create-form/type-option]}
+              {:value :multiselect :label [text :t.create-form/type-multiselect]}
+              {:value :table :label [text :t.create-form/type-table]}
+              {:value :date :label [text :t.create-form/type-date]}
+              {:value :email :label [text :t.create-form/type-email]}
+              {:value :phone-number :label [text :t.create-form/type-phone-number]}
+              {:value :ip-address :label [text :t.create-form/type-ip-address]}
+              {:value :attachment :label [text :t.create-form/type-attachment]}
+              {:value :label :label [text :t.create-form/type-label]}
+              {:value :header :label [text :t.create-form/type-header]}]}])
 
-(defn- form-field-optional-checkbox [field]
-  [checkbox context {:keys [:form/fields (:field/index field) :field/optional]
-                     :label (text :t.create-form/optional)}])
+(defn- form-field-optional-checkbox [field-index]
+  [checkbox context {:keys [:form/fields field-index :field/optional]
+                     :label [text :t.create-form/optional]}])
 
-(defn- form-field-table-optional-checkbox [field]
-  [checkbox context {:keys [:form/fields (:field/index field) :field/optional]
+(defn- form-field-table-optional-checkbox [field-index]
+  [checkbox context {:keys [:form/fields field-index :field/optional]
                      :negate? true
-                     :label (text :t.create-form/required-table)}])
+                     :label [text :t.create-form/required-table]}])
 
 (defn- add-form-field-button [index]
   [:a.add-form-field {:href "#"
                       :on-click (fn [event]
                                   (.preventDefault event)
                                   (rf/dispatch [::add-form-field index]))}
-   [atoms/add-symbol] " " (text :t.create-form/add-form-field)])
-
-(defn- remove-form-field-button [field-index]
-  [items/remove-button #(when (js/confirm (text :t.create-form/confirm-remove-field))
-                          (rf/dispatch [::remove-form-field field-index]))])
-
-(defn- move-form-field-up-button [field-index]
-  [items/move-up-button
-   {:on-click #(rf/dispatch [::move-form-field-up field-index])}])
-
-(defn- move-form-field-down-button [field-index]
-  [items/move-down-button
-   {:on-click #(rf/dispatch [::move-form-field-down field-index])}])
+   [atoms/add-symbol] " " [text :t.create-form/add-form-field]])
 
 (defn- save-form-button [on-click]
   [:button.btn.btn-primary
@@ -585,9 +567,10 @@
   (text-format error (str (text label) " (" (str/upper-case (name lang)) ")")))
 
 (defn- format-field-validation [field field-errors]
-  (let [field-index (:field/index field)
-        lang @(rf/subscribe [:language])]
-    [:li (text-format :t.create-form/field-n (inc field-index) (localized-field-title field lang))
+  (let [field-index (:field/index field)]
+    [:li (text-format :t.create-form/field-n
+                      (inc field-index)
+                      (localized (:field/title field)))
      (into [:ul]
            (concat
             (for [[lang error] (:field/title field-errors)]
@@ -640,153 +623,202 @@
                           (format-validation-link (str "fields-" field-index "-columns-" column-id "-label-" (name lang))
                                                   (format-error-for-localized-field error :t.create-form/option-label lang))))]]))))]))
 
-(defn format-validation-errors [form-errors form lang]
+;; XXX: shared component with rems.administration.form
+(defn format-validation-errors [form-errors form]
   ;; TODO: deduplicate with field definitions
-  (into [:ul
-         (when-let [error (:organization form-errors)]
-           (format-validation-link "organization"
-                                   (text-format error (text :t.administration/organization))))
-
-         (when-let [error (:form/internal-name form-errors)]
-           (format-validation-link "internal-name"
-                                   (text-format error (text :t.administration/internal-name))))
-
+  [:ul
+   (when-let [error (:organization form-errors)]
+     (format-validation-link "organization"
+                             (text-format error (text :t.administration/organization))))
+   (when-let [error (:form/internal-name form-errors)]
+     (format-validation-link "internal-name"
+                             (text-format error (text :t.administration/internal-name))))
+   (into [:<>]
          (for [[lang error] (:form/external-title form-errors)]
            (format-validation-link (str "external-title-" (name lang))
-                                   (format-error-for-localized-field error :t.administration/external-title lang)))]
-
-        (for [[field-index field-errors] (into (sorted-map) (:form/fields form-errors))]
-          (let [field (get-in form [:form/fields field-index])]
-            [format-field-validation field field-errors lang]))))
+                                   (format-error-for-localized-field error :t.administration/external-title lang))))
+   (into [:<>]
+         (for [[field-index field-errors] (into (sorted-map) (:form/fields form-errors))]
+           (let [field (get-in form [:form/fields field-index])]
+             [format-field-validation field field-errors])))])
 
 (defn- validation-errors-summary []
-  (let [form @(rf/subscribe [::form-data])
-        errors @(rf/subscribe [::form-errors])
-        lang @(rf/subscribe [:language])]
-    (when errors
-      [:div.alert.alert-danger (text :t.actions.errors/validation-errors)
-       [format-validation-errors errors form lang]])))
+  (when-some [errors (not-empty @(rf/subscribe [::form-errors]))]
+    [:div.alert.alert-danger (text :t.actions.errors/validation-errors)
+     [format-validation-errors errors @(rf/subscribe [::form-data])]]))
 
-(defn- form-fields [fields]
-  (into [:div
-         [:div.form-field.new-form-field
+(defn- field-controls [idx title]
+  [:div.form-field-header.d-flex
+   [:h3 (text-format :t.create-form/field-n (inc idx) (localized title))]
+   [:div.form-field-controls.text-nowrap.ml-auto
+    [items/move-up-button {:on-click #(rf/dispatch [::move-form-field-up idx])}]
+    [items/move-down-button {:on-click #(rf/dispatch [::move-form-field-down idx])}]
+    [items/remove-button (let [label (text :t.create-form/confirm-remove-field)]
+                           #(when (js/confirm label)
+                              (rf/dispatch [::remove-form-field idx])))]]])
+
+(defn- field-editor [idx field]
+  (let [editor-id (field-editor-id (:field/id field))]
+    [:div.form-field {:id editor-id
+                      :data-field-index idx}
+     [collapsible/minimal
+      {:id editor-id ; not the same as element id
+       :always [field-controls idx (:field/title field)]
+       :collapse (let [columns? (common-form/supports-columns? field)
+                       info-text? (common-form/supports-info-text? field)
+                       max-length? (common-form/supports-max-length? field)
+                       optional? (common-form/supports-optional? field)
+                       options? (common-form/supports-options? field)
+                       placeholder? (common-form/supports-placeholder? field)
+                       privacy? (common-form/supports-privacy? field)
+                       visibility? (common-form/supports-visibility? field)]
+                   [:div {:id (str editor-id "-contents")
+                          :tab-index "-1"}
+                    [form-field-title-field idx]
+                    [form-field-type-radio-group idx]
+
+                    (when optional?
+                      (if (= :table (:field/type field))
+                        [form-field-table-optional-checkbox idx]
+                        [form-field-optional-checkbox idx]))
+                    (when info-text?
+                      [form-field-info-text idx])
+                    (when placeholder?
+                      [form-field-placeholder-field idx])
+
+                    [:div.form-group.field
+                     [:label.administration-field-label
+                      (text :t.create-form/additional-settings)
+                      " "
+                      [collapsible/controls (str "fields-" idx "-additional")]]
+                     [:div.collapse.solid-group {:id (str "fields-" idx "-additional")}
+                      [form-field-id-field idx]
+                      (when max-length?
+                        [form-field-max-length-field idx])
+                      (when privacy?
+                        [form-field-privacy idx])
+                      (when visibility?
+                        [form-field-visibility idx])]]
+
+                    (when options?
+                      [form-field-option-fields idx])
+                    (when columns?
+                      [form-field-column-fields idx])])}]]))
+
+(defn- get-field-key [field idx]
+  (or (not-blank (:field/id field))
+      (str "new-field-" idx)))
+
+(defn- form-fields []
+  (into [:<>
+         [:div.new-form-field
           [add-form-field-button 0]]]
-
-        (for [{index :field/index :as field} fields]
+        (for [[idx field] (indexed @(rf/subscribe [::fields]))]
+          ^{:key (get-field-key field idx)}
           [:<>
-           [:div.form-field {:id (field-editor-id (:field/id field))
-                             :key index
-                             :data-field-index index}
-            [collapsible/minimal
-             {:id (field-editor-id (:field/id field))
-              :always
-              [:div.form-field-header.d-flex
-               [:h3 (text-format :t.create-form/field-n (inc index) (localized-field-title field @(rf/subscribe [:language])))]
-               [:div.form-field-controls.text-nowrap.ml-auto
-                [move-form-field-up-button index]
-                [move-form-field-down-button index]
-                [remove-form-field-button index]]]
-              :collapse
-              [:div
-               {:id (str (field-editor-id (:field/id field)) "-contents")
-                :tab-index "-1"}
-               [form-field-title-field index]
-               [form-field-type-radio-group index]
-               (when (common-form/supports-optional? field)
-                 (if (= :table (:field/type field))
-                   [form-field-table-optional-checkbox field]
-                   [form-field-optional-checkbox field]))
-               (when (common-form/supports-info-text? field)
-                 [form-field-info-text index])
-               (when (common-form/supports-placeholder? field)
-                 [form-field-placeholder-field index])
-               (let [id (str "fields-" index "-additional")]
-                 [:div.form-group.field
-                  [:label.administration-field-label
-                   (text :t.create-form/additional-settings)
-                   " "
-                   [collapsible/controls id (text :t.collapse/show) (text :t.collapse/hide) false]]
-                  [:div.collapse.solid-group {:id id}
-                   [form-field-id-field index]
-                   (when (common-form/supports-max-length? field)
-                     [form-field-max-length-field index])
-                   (when (common-form/supports-privacy? field)
-                     [form-field-privacy index])
-                   (when (common-form/supports-visibility? field)
-                     [form-field-visibility index])]])
-               (when (common-form/supports-options? field)
-                 [form-field-option-fields index])
-               (when (common-form/supports-columns? field)
-                 [form-field-column-fields index])]}]]
-
-           [:div.form-field.new-form-field
-            [add-form-field-button (inc index)]]])))
+           [field-editor idx field]
+           [:div.new-form-field
+            [add-form-field-button (inc idx)]]])))
 
 (rf/reg-event-db
  ::set-field-value
  (fn [db [_ field-id field-value]]
    (assoc-in db [::preview field-id] field-value)))
 
-(rf/reg-sub
- ::preview
- (fn [db _]
-   (::preview db {})))
+;; currently, field can be passed from a) component props, or b) subscription.
+;; when a), form fields are not fetchable from db by field id, so must use whole object instead.
+(rf/reg-sub ::preview (fn [db [_ field]]
+                        (let [preview (::preview db)
+                              visible? (field-visible? field (::preview db))]
+                          {:value (get preview (:field/id field))
+                           ::field-visible? visible?})))
 
-(defn form-preview [form]
-  (let [preview @(rf/subscribe [::preview])
-        lang @(rf/subscribe [:language])]
+(defn- render-preview-hidden []
+  [:div {:style {:position :absolute
+                 :top 0
+                 :left 0
+                 :right 0
+                 :bottom 0
+                 :z-index 1
+                 :display :flex
+                 :flex-direction :column
+                 :justify-content :center
+                 :align-items :flex-end
+                 :border-radius "0.4rem"
+                 :margin "-0.5rem"
+                 :background-color "rgba(230,230,230,0.5)"}}
+   [:div.pr-4 (text :t.create-form.visibility/hidden)]])
+
+(defn- preview-field [field]
+  (let [field-id (:field/id field)
+        preview @(rf/subscribe [::preview field])]
+    [:div.field-preview {:id (str "field-preview-" field-id)}
+     [fields/field (assoc field
+                          :form/id 1 ; dummy value
+                          :on-change (r/partial #(rf/dispatch-sync [::set-field-value field-id %]))
+                          :field/value (:value preview))]
+     (when-not (::field-visible? preview)
+       [render-preview-hidden])]))
+
+(rf/reg-event-db ::reset-preview (fn [db] (assoc db ::preview nil)))
+
+(def ^:private use-preview-state
+  "Hook-like helper that resets form preview state on component unmount."
+  (ra/make-reaction identity
+                    {:on-dispose #(rf/dispatch [::reset-preview])}))
+
+;; XXX: shared component with rems.administration.form
+(defn form-preview [& [form]]
+  @use-preview-state
+
+  (let [form-fields (if form
+                      (:form/fields form)
+                      @(rf/subscribe [::fields]))]
     [collapsible/component
      {:id "preview-form"
       :title (text :t.administration/preview)
       :always (into [:div#preview-form-contents]
-                    (for [field (:form/fields form)]
-                      [:div.field-preview {:id (str "field-preview-" (:field/id field))}
-                       [fields/field (assoc field
-                                            :form/id 1 ; dummy value
-                                            :on-change #(rf/dispatch [::set-field-value (:field/id field) %])
-                                            :field/value (get-in preview [(:field/id field)]))]
-                       (when-not (field-visible? field preview)
-                         [:div {:style {:position :absolute
-                                        :top 0
-                                        :left 0
-                                        :right 0
-                                        :bottom 0
-                                        :z-index 1
-                                        :display :flex
-                                        :flex-direction :column
-                                        :justify-content :center
-                                        :align-items :flex-end
-                                        :border-radius "0.4rem"
-                                        :margin "-0.5rem"
-                                        :background-color "rgba(230,230,230,0.5)"}}
-                          [:div.pr-4 (text :t.create-form.visibility/hidden)]])]))}]))
+                    (for [[idx field] (indexed form-fields)]
+                      ^{:key (get-field-key field idx)}
+                      [preview-field field]))}]))
+
+(defn- form-page-wrapper []
+  @use-autoscroll
+
+  [:div.row
+   [:div.col-lg
+    [collapsible/component
+     {:id "create-form"
+      :class "fields"
+      :title (text :t.administration/form)
+      :always [:div
+               [form-organization-field]
+               [form-internal-name-field]
+               [form-external-title-field]
+               [form-fields]
+               [:div.col.commands
+                [cancel-button]
+                [save-form-button (if @(rf/subscribe [::edit-form?])
+                                    #(rf/dispatch [::edit-form])
+                                    #(rf/dispatch [::create-form]))]]]}]]
+   [:div.col-lg [form-preview]]])
 
 (defn create-form-page []
-  (enable-autoscroll!)
-  (let [form @(rf/subscribe [::form-data])
-        edit-form? @(rf/subscribe [::edit-form?])
-        loading? @(rf/subscribe [::form :fetching?])]
+  (let [editing? @(rf/subscribe [::edit-form?])]
     [:div
      [administration/navigator]
-     [document-title (page-title edit-form?)]
+     [document-title (if editing?
+                       (text :t.administration/edit-form)
+                       (text :t.administration/create-form))]
      [flash-message/component :top]
-     (if loading?
-       [:div [spinner/big]]
+     (cond
+       (and editing? (not @(rf/subscribe [::form :initialized?])))
+       [spinner/big]
+
+       (and editing? @(rf/subscribe [::form :fetching?]))
+       [spinner/big]
+
+       :else
        [:<>
         [validation-errors-summary]
-        [:div.row
-         [:div.col-lg
-          [collapsible/component
-           {:id "create-form"
-            :class "fields"
-            :title [text :t.administration/form]
-            :always [:div
-                     [form-organization-field]
-                     [form-internal-name-field]
-                     [form-external-title-field]
-                     [form-fields (:form/fields form)]
-                     [:div.col.commands
-                      [cancel-button]
-                      [save-form-button #(rf/dispatch [::send-form])]]]}]]
-         [:div.col-lg
-          [form-preview form]]]])]))
+        [form-page-wrapper]])]))

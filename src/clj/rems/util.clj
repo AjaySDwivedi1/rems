@@ -65,10 +65,10 @@
     (loop [files []]
       (if-let [entry (.getNextEntry stream)]
         (if (re-matches re (.getName entry))
-          (let [baos (java.io.ByteArrayOutputStream.)]
-            (io/copy stream baos)
-            (recur (conj files {:name (.getName entry)
-                                :bytes (.toByteArray baos)})))
+          (recur (conj files {:name (.getName entry)
+                              :bytes (with-open [baos (java.io.ByteArrayOutputStream.)]
+                                       (io/copy stream baos)
+                                       (.toByteArray baos))}))
           (recur files))
         files))))
 

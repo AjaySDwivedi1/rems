@@ -25,10 +25,10 @@
 (deftest test-size-checking-copy
   (let [data [0x0 0x1 0x2 0x4 0x2 0xF]
         copy (fn [opts]
-               (let [input (io/input-stream (byte-array data))
-                     output (ByteArrayOutputStream. (count data))
-                     maybe-error (size-checking-copy input output opts)]
-                 [maybe-error (seq (.toByteArray output))]))]
+               (with-open [input (io/input-stream (byte-array data))
+                           output (ByteArrayOutputStream. (count data))]
+                 (let [maybe-error (size-checking-copy input output opts)]
+                   [maybe-error (seq (.toByteArray output))])))]
     (testing "default parameters, essentially infinite"
       (is (= [nil data] (copy {}))))
 

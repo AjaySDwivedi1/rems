@@ -3,6 +3,8 @@
             [rems.text :refer [text]]
             [rems.guide-util :refer [component-info example]]))
 
+(defonce ^:private registry (r/atom nil))
+
 (defn- show [id callback]
   (let [element (js/$ (str "#" id))]
     (.collapse element "show")
@@ -29,82 +31,113 @@
   [:h2.card-header.rems-card-margin-fix {:class (or class "rems-card-header")}
    title])
 
-(defn- show-more-button [{:keys [label id expanded callback]}]
-  [:a.collapse
-   {:class [(str id "-more") (when-not expanded
-                               "show")]
-    :href "#"
-    :id (str id "-more-link")
-    :on-click (fn [event]
-                (.preventDefault event)
-                (show id callback))}
-   label])
+(defn- show-more-button [{:keys [callback
+                                 hidden-content?
+                                 id]}]
+  [:a.collapse.show {:class (str id "-more")
+                     :href "#"
+                     :id (str id "-more-link")
+                     :on-click (fn [event]
+                                 (.preventDefault event)
+                                 (show id callback))}
+   (if hidden-content?
+     (text :t.collapse/show-more)
+     (text :t.collapse/show))])
 
-(defn- show-less-button [{:keys [label id expanded callback]}]
-  [:a.collapse
-   {:class [(str id "-less") (when expanded
-                               "show")]
-    :href "#"
-    :on-click (fn [event]
-                (.preventDefault event)
-                (hide id callback))}
-   label])
+(defn- show-less-button [{:keys [callback
+                                 hidden-content?
+                                 id]}]
+  [:a.collapse.show {:class (str id "-less")
+                     :href "#"
+                     :on-click (fn [event]
+                                 (.preventDefault event)
+                                 (hide id callback))}
+   (if hidden-content?
+     (text :t.collapse/show-less)
+     (text :t.collapse/hide))])
 
 (defn controls
   "A hide/show button that toggles the visibility of a div. Arguments
 
-  `id` id of the div to control. Should have the collapse class
-  `label-show` label to show when div is collapsed
-  `label-hide` label to show when div is expanded
-  `open?` should the collapse be open initially?"
-  [id label-show label-hide open?]
-  [:<>
-   [show-more-button {:label label-show
-                      :id id
-                      :expanded open?}]
-   [show-less-button {:label label-hide
-                      :id id
-                      :expanded open?}]])
+  - `id` id of the div to control. Should have the collapse class"
+  [id & [{:keys [open?]}]]
+  (r/with-let [show? (r/atom (true? open?))
+               on-show-more #(reset! show? true)
+               on-show-less #(reset! show? false)]
+    (if @show?
+      [show-less-button {:id id :callback on-show-less}]
+      [show-more-button {:id id :callback on-show-more}])))
 
-(defn- block [{:keys [open?]}]
-  (let [show? (r/atom open?)] ; track internal open/closed status
-    (fn [{:keys [id open? on-open on-close content-always content-hideable content-hidden content-footer top-less-button? bottom-less-button? class]}]
-      (let [always? (not-empty content-always)
-            hidden (not-empty content-hidden)
-            show-more [:div.collapse-toggle
-                       [show-more-button {:label (if (or always? hidden)
-                                                   (text :t.collapse/show-more)
-                                                   (text :t.collapse/show))
-                                          :id id
-                                          :expanded open?
-                                          :callback (fn []
-                                                      (reset! show? true)
-                                                      (when on-open
-                                                        (on-open)))}]]
-            show-less [:div.collapse-toggle
-                       [show-less-button {:label (if (or always? hidden)
-                                                   (text :t.collapse/show-less)
-                                                   (text :t.collapse/hide))
-                                          :id id
-                                          :expanded open?
-                                          :callback (fn []
-                                                      (reset! show? false)
-                                                      (when on-close
-                                                        (on-close)))}]]]
-        [:div {:class class}
-         content-always
-         (when (seq content-hideable)
-           [:div
-            (when top-less-button? show-less)
-            (when-not @show? hidden)
-            [:div.collapse {:id id
-                            :class (when open?
-                                     "show")
-                            :tab-index "-1"}
-             content-hideable]
-            show-more
-            (when-not (false? bottom-less-button?) show-less)])
-         content-footer]))))
+(defn- block [{:keys [id
+                      open?
+                      on-open
+                      on-close
+                      content-always
+                      content-hideable
+                      content-hidden
+                      content-footer
+                      top-less-button?
+                      bottom-less-button?
+                      class]}]
+  ;; register component by global id, that can be referred externally.
+  ;; component is cleaned from registry in finally-clause during unmount
+  (r/with-let [c (doto (r/cursor registry [id])
+                   (reset! {:show? (true? open?)
+                            :initial-render-done? (true? open?)}))
+               initial-render-done? (r/cursor c [:initial-render-done?]) ; keep component in DOM after first render
+               show? (r/cursor c [:show?])
+               on-show-more (fn []
+                              (reset! show? true)
+                              (reset! initial-render-done? true)
+                              (when on-open
+                                (on-open)))
+               on-show-less (fn []
+                              (reset! show? false)
+                              (when on-close
+                                (on-close)))
+               collapse-id (str id "-collapse")]
+
+    [:div {:class class}
+     content-always
+
+     (when (or (seq content-hideable)
+               (seq content-hidden))
+       [:div.collapsible-content
+        ;; top-most "hide" or "show less" button
+        (when @show?
+          (when-not (false? top-less-button?)
+            [:div.collapse-toggle
+             [show-less-button {:callback on-show-less
+                                :hidden-content? (some? (seq content-hidden))
+                                :id collapse-id}]]))
+        ;; placeholder content when hidden
+        (when (not @show?)
+          content-hidden)
+        ;; toggle-able collapse content.
+        ;; after first render, stays in DOM, and visibility is managed by Bootstrap.
+        (when @initial-render-done?
+          [:div.collapse {:id collapse-id
+                          :class (when @show? "show")
+                          :tab-index "-1"}
+           content-hideable])
+        ;; bottom "show" or "show-more" button
+        (when-not @show?
+          [:div.collapse-toggle
+           [show-more-button {:callback on-show-more
+                              :hidden-content? (some? (seq content-hidden))
+                              :id collapse-id}]])
+        ;; bottom "hide" or "show less" button
+        (when @show?
+          (when-not (false? bottom-less-button?)
+            [:div.collapse-toggle
+             [show-less-button {:callback on-show-less
+                                :hidden-content? (some? (seq content-hidden))
+                                :id collapse-id}]]))])
+
+     content-footer]
+
+    (finally
+      (r/rswap! registry dissoc id))))
 
 (defn minimal
   "Displays a minimal collapsible block of content.
@@ -112,26 +145,38 @@
   The difference to `component` is that there are no borders around the content.
 
   Pass a map of options with the following keys:
-  `:id` unique id required
-  `:class` optional class for wrapper div
-  `:open?` should the collapsible be open? Default false
-  `:top-less-button?` should top show less button be shown? Default false
-  `:bottom-less-button?` should bottom show less button be shown? Default true
-  `:on-open` triggers the function callback given as an argument when load-more is clicked
-  `:on-close` triggers the function callback given as an argument when show less is clicked
-  `:title` component displayed in title area
-  `:title-class` class for the title area
-  `:always` component displayed always before collapsible area
-  `:collapse` component that is toggled displayed or not
-  `:collapse-hidden` component that is displayed when content is collapsed. Defaults nil
-  `:footer` component displayed always after collapsible area"
-  [{:keys [id class open? on-open on-close title title-class always collapse collapse-hidden footer top-less-button? bottom-less-button?]}]
+  - `:id` unique id required
+  - `:class` optional class for wrapper div
+  - `:open?` should the collapsible be open? Default false
+  - `:top-less-button?` should top show less button be shown? Default false
+  - `:bottom-less-button?` should bottom show less button be shown? Default true
+  - `:on-open` triggers the function callback given as an argument when load-more is clicked
+  - `:on-close` triggers the function callback given as an argument when show less is clicked
+  - `:title` component displayed in title area
+  - `:title-class` class for the title area
+  - `:always` component displayed always before collapsible area
+  - `:collapse` component that is toggled displayed or not
+  - `:collapse-hidden` component that is displayed when content is collapsed. Defaults nil
+  - `:footer` component displayed always after collapsible area"
+  [{:keys [always
+           bottom-less-button?
+           class
+           collapse
+           collapse-hidden
+           footer
+           id
+           on-close
+           on-open
+           open?
+           title
+           title-class
+           top-less-button?]}]
   [:div {:id id :class class}
    (when title
      [header {:title title
               :class title-class}])
    (when (or always collapse footer)
-     [block {:id (str id "-collapse")
+     [block {:id id
              :open? open?
              :on-open on-open
              :on-close on-close
@@ -139,8 +184,8 @@
              :content-hideable collapse
              :content-hidden collapse-hidden
              :content-footer footer
-             :top-less-button? top-less-button?
-             :bottom-less-button? bottom-less-button?}])])
+             :top-less-button? (not (false? top-less-button?))
+             :bottom-less-button? (not (false? bottom-less-button?))}])])
 
 (defn component
   "Displays a collapsible block of content.
@@ -166,7 +211,7 @@
      [header {:title title
               :class title-class}])
    (when (or always collapse footer)
-     [block {:id (str id "-collapse")
+     [block {:id id
              :class "collapse-content"
              :open? open?
              :on-open on-open
@@ -175,13 +220,18 @@
              :content-hideable collapse
              :content-hidden collapse-hidden
              :content-footer footer
-             :top-less-button? top-less-button?
-             :bottom-less-button? bottom-less-button?}])])
+             :top-less-button? (not (false? top-less-button?))
+             :bottom-less-button? (not (false? bottom-less-button?))}])])
 
 (defn open-component
   "A helper for opening a collapsible/component or collapsible/minimal"
   [id]
-  (show (str id "-collapse") nil))
+  (let [c (get-in @registry [id])]
+    (assert c {:error "collapsible is uninitialized or failed to register"
+               :id id
+               :registry @registry})
+    (r/rswap! registry update id merge {:show? true :initial-render-done? true})
+    (show (str id "-collapse") nil)))
 
 (defn guide
   []
